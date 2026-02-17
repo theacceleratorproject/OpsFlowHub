@@ -230,6 +230,38 @@ export type Database = {
         }
         Relationships: []
       }
+      profiles: {
+        Row: {
+          id: string
+          email: string
+          full_name: string | null
+          role: string
+          created_at: string
+        }
+        Insert: {
+          id: string
+          email: string
+          full_name?: string | null
+          role?: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          email?: string
+          full_name?: string | null
+          role?: string
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "profiles_id_fkey"
+            columns: ["id"]
+            isOneToOne: true
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
       projects: {
         Row: {
           id: string
@@ -414,6 +446,7 @@ export type Database = {
           approved_by: string | null
           approval_date: string | null
           rejection_reason: string | null
+          work_order_number: string | null
           created_at: string
         }
         Insert: {
@@ -430,6 +463,7 @@ export type Database = {
           approved_by?: string | null
           approval_date?: string | null
           rejection_reason?: string | null
+          work_order_number?: string | null
           created_at?: string
         }
         Update: {
@@ -446,6 +480,7 @@ export type Database = {
           approved_by?: string | null
           approval_date?: string | null
           rejection_reason?: string | null
+          work_order_number?: string | null
           created_at?: string
         }
         Relationships: [
@@ -478,8 +513,10 @@ export type Database = {
           status: string
           picked_qty: number | null
           picked_date_time: string | null
+          picked_by: string | null
           verified_by: string | null
           issue_note: string | null
+          source: string
           created_at: string
         }
         Insert: {
@@ -494,8 +531,10 @@ export type Database = {
           status?: string
           picked_qty?: number | null
           picked_date_time?: string | null
+          picked_by?: string | null
           verified_by?: string | null
           issue_note?: string | null
+          source?: string
           created_at?: string
         }
         Update: {
@@ -510,8 +549,10 @@ export type Database = {
           status?: string
           picked_qty?: number | null
           picked_date_time?: string | null
+          picked_by?: string | null
           verified_by?: string | null
           issue_note?: string | null
+          source?: string
           created_at?: string
         }
         Relationships: [
@@ -524,6 +565,63 @@ export type Database = {
           },
           {
             foreignKeyName: "picking_orders_version_id_fkey"
+            columns: ["version_id"]
+            isOneToOne: false
+            referencedRelation: "project_versions"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      stock_issues: {
+        Row: {
+          id: string
+          project_id: string
+          version_id: string | null
+          work_order_number: string | null
+          part_number: string
+          part_description: string | null
+          quantity_short: number
+          reported_by: string | null
+          issue_date: string
+          notes: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          project_id: string
+          version_id?: string | null
+          work_order_number?: string | null
+          part_number: string
+          part_description?: string | null
+          quantity_short?: number
+          reported_by?: string | null
+          issue_date?: string
+          notes?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          project_id?: string
+          version_id?: string | null
+          work_order_number?: string | null
+          part_number?: string
+          part_description?: string | null
+          quantity_short?: number
+          reported_by?: string | null
+          issue_date?: string
+          notes?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "stock_issues_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "stock_issues_version_id_fkey"
             columns: ["version_id"]
             isOneToOne: false
             referencedRelation: "project_versions"

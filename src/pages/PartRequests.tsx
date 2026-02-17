@@ -1,5 +1,6 @@
 import { useProject } from '@/contexts/ProjectContext';
-import { usePartRequests, useCreatePartRequest, useUpdatePartRequest } from '@/hooks/use-supabase-data';
+import { useAuth } from '@/contexts/AuthContext';
+import { usePartRequests, useCreatePartRequest, useUpdatePartRequest, useBomLines, useInventory, usePickingOrders, useCreatePickingOrders } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import { ShoppingCart, Plus, Loader2 } from 'lucide-react';
@@ -23,10 +24,15 @@ type Urgency = 'Standard' | 'Expedite' | 'Critical';
 
 const PartRequests = () => {
   const { selectedProject, selectedVersion } = useProject();
+  const { canEdit, user } = useAuth();
   const versionId = selectedVersion?.id;
   const { data: requests = [], isLoading } = usePartRequests(versionId);
   const createRequest = useCreatePartRequest();
   const updateRequest = useUpdatePartRequest();
+  const { data: bomLines = [] } = useBomLines(versionId);
+  const { data: inventoryItems = [] } = useInventory(versionId);
+  const { data: pickingOrders = [] } = usePickingOrders(versionId);
+  const createPickingOrders = useCreatePickingOrders();
 
   const [showForm, setShowForm] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -66,7 +72,7 @@ const PartRequests = () => {
         version_id: selectedVersion.id,
         part_number: partNumber.trim(),
         requested_qty: Number(requestedQty),
-        requested_by: 'current.user@opspulse.io',
+        requested_by: user?.email ?? '',
         needed_by_date: neededByDate,
         urgency,
       });
@@ -80,8 +86,60 @@ const PartRequests = () => {
 
   const handleApprove = async (id: string) => {
     try {
-      await updateRequest.mutateAsync({ id, status: 'Approved', approved_by: 'current.user@opspulse.io', approval_date: new Date().toISOString() });
-      toast.success('Request approved');
+      const request = requests.find(r => r.id === id);
+      if (!request) return;
+
+      // Generate WO#
+      const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const todayPicks = pickingOrders.filter(p => p.work_order_number?.startsWith(`WO-${today}`));
+      const seq = String(todayPicks.length + 1).padStart(3, '0');
+      const woNumber = `WO-${today}-${seq}`;
+
+      // Update request with approval + WO#
+      await updateRequest.mutateAsync({
+        id,
+        status: 'Approved',
+        approved_by: user?.email ?? '',
+        approval_date: new Date().toISOString(),
+        work_order_number: woNumber,
+      });
+
+      // Build picking orders: BOM child lines + the requested part itself
+      const inventoryMap = new Map(inventoryItems.map(i => [i.part_number, i.bin_location]));
+      const newPicks: { project_id: string; version_id: string; work_order_number: string; part_number: string; pick_qty: number; bin_location: string | null; status: 'Pending'; source: 'WO' }[] = [];
+
+      // Always add the requested part as a picking order
+      newPicks.push({
+        project_id: selectedProject!.id,
+        version_id: selectedVersion!.id,
+        work_order_number: woNumber,
+        part_number: request.part_number,
+        pick_qty: request.requested_qty,
+        bin_location: inventoryMap.get(request.part_number) ?? null,
+        status: 'Pending',
+        source: 'WO',
+      });
+
+      // Also add BOM child lines if they exist
+      const childLines = bomLines.filter(l => l.bom_level > 0);
+      childLines.forEach(line => {
+        // Avoid duplicating the requested part
+        if (line.component_number === request.part_number) return;
+        newPicks.push({
+          project_id: selectedProject!.id,
+          version_id: selectedVersion!.id,
+          work_order_number: woNumber,
+          part_number: line.component_number,
+          pick_qty: line.required_qty,
+          bin_location: inventoryMap.get(line.component_number) ?? null,
+          status: 'Pending',
+          source: 'WO',
+        });
+      });
+
+      await createPickingOrders.mutateAsync(newPicks);
+
+      toast.success(`Request approved — ${woNumber} — ${newPicks.length} pick(s) created`);
     } catch {
       toast.error('Failed to approve request');
     }
@@ -91,7 +149,7 @@ const PartRequests = () => {
     const reason = window.prompt('Rejection reason:');
     if (!reason) return;
     try {
-      await updateRequest.mutateAsync({ id, status: 'Rejected', rejection_reason: reason });
+      await updateRequest.mutateAsync({ id, status: 'Rejected', rejection_reason: reason, approved_by: user?.email ?? '' });
       toast.success('Request rejected');
     } catch {
       toast.error('Failed to reject request');
@@ -118,13 +176,15 @@ const PartRequests = () => {
           </h2>
           <p className="text-xs text-muted-foreground">{requests.length} requests</p>
         </div>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New Request
-        </button>
+        {canEdit && (
+          <button
+            onClick={() => setShowForm(!showForm)}
+            className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New Request
+          </button>
+        )}
       </div>
 
       {showForm && (
@@ -215,6 +275,7 @@ const PartRequests = () => {
                 <th className="px-3 py-2.5 text-right font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Qty</th>
                 <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Urgency</th>
                 <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Status</th>
+                <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">WO#</th>
                 <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Needed By</th>
                 <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Requested By</th>
                 <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Actions</th>
@@ -240,10 +301,11 @@ const PartRequests = () => {
                       (req.status === 'Approved' || req.status === 'Ordered') && "text-foreground",
                     )}>{req.status}</span>
                   </td>
+                  <td className="px-3 py-2.5 font-mono text-muted-foreground">{req.work_order_number ?? '—'}</td>
                   <td className="px-3 py-2.5 text-muted-foreground">{req.needed_by_date ? new Date(req.needed_by_date).toLocaleDateString() : '—'}</td>
                   <td className="px-3 py-2.5 text-muted-foreground">{req.requested_by ? req.requested_by.split('@')[0] : '—'}</td>
                   <td className="px-3 py-2.5 text-center">
-                    {req.status === 'Pending' && (
+                    {req.status === 'Pending' && canEdit && (
                       <div className="flex items-center justify-center gap-1">
                         <button onClick={() => handleApprove(req.id)} className="text-[10px] font-medium text-ops-green hover:underline">Approve</button>
                         <span className="text-muted-foreground">·</span>
@@ -254,7 +316,7 @@ const PartRequests = () => {
                 </tr>
               ))}
               {activeRequests.length === 0 && (
-                <tr><td colSpan={8} className="px-3 py-10 text-center text-muted-foreground">No requests</td></tr>
+                <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">No requests</td></tr>
               )}
             </tbody>
           </table>

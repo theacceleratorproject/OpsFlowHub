@@ -1,5 +1,6 @@
 import { useProject } from '@/contexts/ProjectContext';
-import { usePickingOrders, useCreatePickingOrder, useUpdatePickingOrder } from '@/hooks/use-supabase-data';
+import { useAuth } from '@/contexts/AuthContext';
+import { usePickingOrders, useCreatePickingOrder, useUpdatePickingOrder, useCreateStockIssue, useBomLines } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import { Truck, Plus, Loader2 } from 'lucide-react';
@@ -7,20 +8,29 @@ import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 
 const PickingOrders = () => {
   const { selectedProject, selectedVersion } = useProject();
+  const { isAdmin, user } = useAuth();
   const versionId = selectedVersion?.id;
   const { data: picks = [], isLoading } = usePickingOrders(versionId);
   const createPick = useCreatePickingOrder();
   const updatePick = useUpdatePickingOrder();
+  const createStockIssue = useCreateStockIssue();
+  const { data: bomLines = [] } = useBomLines(versionId);
 
   const [showCreate, setShowCreate] = useState(false);
   const [newPick, setNewPick] = useState({
     work_order_number: '', part_number: '', pick_qty: '', bin_location: '', assigned_picker: '',
   });
+
+  // Out of Stock modal state
+  const [oosPickId, setOosPickId] = useState<string | null>(null);
+  const [oosQtyShort, setOosQtyShort] = useState('');
+  const [oosNotes, setOosNotes] = useState('');
 
   if (!selectedProject || !selectedVersion) return null;
 
@@ -35,6 +45,7 @@ const PickingOrders = () => {
         pick_qty: Number(newPick.pick_qty),
         bin_location: newPick.bin_location.trim() || null,
         assigned_picker: newPick.assigned_picker.trim() || null,
+        source: 'Manual',
       });
       toast.success('Picking order created');
       setShowCreate(false);
@@ -51,9 +62,10 @@ const PickingOrders = () => {
         const pick = picks.find(p => p.id === id);
         updates.picked_qty = pick?.pick_qty ?? 0;
         updates.picked_date_time = new Date().toISOString();
+        updates.picked_by = user?.email ?? '';
       }
       if (status === 'Verified') {
-        updates.verified_by = 'current.user@opspulse.io';
+        updates.verified_by = user?.email ?? '';
       }
       await updatePick.mutateAsync(updates as { id: string } & Record<string, unknown>);
       toast.success(`Status updated to ${status}`);
@@ -70,6 +82,41 @@ const PickingOrders = () => {
       toast.success('Issue flagged');
     } catch {
       toast.error('Failed to flag issue');
+    }
+  };
+
+  const openOosModal = (pickId: string) => {
+    const pick = picks.find(p => p.id === pickId);
+    setOosPickId(pickId);
+    setOosQtyShort(String(pick?.pick_qty ?? ''));
+    setOosNotes('');
+  };
+
+  const handleOutOfStock = async () => {
+    if (!oosPickId || !oosQtyShort) return;
+    const pick = picks.find(p => p.id === oosPickId);
+    if (!pick) return;
+    try {
+      // Look up part description from BOM
+      const bomLine = bomLines.find(b => b.component_number === pick.part_number);
+
+      await createStockIssue.mutateAsync({
+        project_id: selectedProject!.id,
+        version_id: selectedVersion!.id,
+        work_order_number: pick.work_order_number ?? null,
+        part_number: pick.part_number,
+        part_description: bomLine?.object_description ?? null,
+        quantity_short: Number(oosQtyShort),
+        reported_by: user?.email ?? '',
+        notes: oosNotes.trim() || null,
+      });
+
+      await updatePick.mutateAsync({ id: oosPickId, status: 'Out of Stock' });
+
+      toast.success('Stock issue reported');
+      setOosPickId(null);
+    } catch {
+      toast.error('Failed to report stock issue');
     }
   };
 
@@ -90,6 +137,7 @@ const PickingOrders = () => {
           </h2>
           <p className="text-xs text-muted-foreground">{picks.length} orders</p>
         </div>
+        {isAdmin && (
         <Dialog open={showCreate} onOpenChange={setShowCreate}>
           <DialogTrigger asChild>
             <button className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90">
@@ -133,6 +181,7 @@ const PickingOrders = () => {
             </div>
           </DialogContent>
         </Dialog>
+        )}
       </div>
 
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="rounded-md border border-border bg-card overflow-hidden">
@@ -141,6 +190,7 @@ const PickingOrders = () => {
             <thead>
               <tr className="border-b border-border bg-muted/40">
                 <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Pick ID</th>
+                <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Source</th>
                 <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Work Order</th>
                 <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Part</th>
                 <th className="px-3 py-2.5 text-right font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Qty</th>
@@ -153,8 +203,13 @@ const PickingOrders = () => {
             </thead>
             <tbody>
               {picks.map(pick => (
-                <tr key={pick.id} className="data-table-row">
+                <tr key={pick.id} className={cn("data-table-row", pick.status === 'Out of Stock' && "bg-accent/10")}>
                   <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.id.slice(0, 8)}</td>
+                  <td className="px-3 py-2.5 text-center">
+                    <span className={cn("text-[10px] font-semibold uppercase tracking-wider",
+                      pick.source === 'WO' ? "text-foreground" : "text-muted-foreground",
+                    )}>{pick.source === 'WO' ? 'WO' : 'Manual'}</span>
+                  </td>
                   <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.work_order_number ?? '—'}</td>
                   <td className="px-3 py-2.5 font-mono font-medium text-foreground">{pick.part_number}</td>
                   <td className="px-3 py-2.5 text-right font-mono text-foreground">{pick.pick_qty}</td>
@@ -165,21 +220,28 @@ const PickingOrders = () => {
                     <span className={cn("text-[10px] font-semibold uppercase tracking-wider",
                       pick.status === 'Verified' && "text-ops-green",
                       pick.status === 'Picked' && "text-ops-green",
+                      pick.status === 'Issued' && "text-foreground",
                       pick.status === 'In Progress' && "text-foreground",
                       pick.status === 'Pending' && "text-muted-foreground",
+                      pick.status === 'Out of Stock' && "text-ops-amber",
                       pick.status === 'Issue' && "text-accent",
                     )}>{pick.status}</span>
                   </td>
                   <td className="px-3 py-2.5 text-center">
                     <div className="flex items-center justify-center gap-1 flex-wrap">
-                      {pick.status === 'Pending' && (
-                        <button onClick={() => handleStatusUpdate(pick.id, 'In Progress')} className="text-[10px] font-medium text-foreground hover:underline">Start</button>
-                      )}
-                      {pick.status === 'In Progress' && (
+                      {(pick.status === 'Pending' || pick.status === 'In Progress') && (
                         <>
                           <button onClick={() => handleStatusUpdate(pick.id, 'Picked')} className="text-[10px] font-medium text-ops-green hover:underline">Picked</button>
                           <span className="text-muted-foreground">·</span>
-                          <button onClick={() => handleFlagIssue(pick.id)} className="text-[10px] font-medium text-accent hover:underline">Issue</button>
+                          <button onClick={() => handleStatusUpdate(pick.id, 'Issued')} className="text-[10px] font-medium text-foreground hover:underline">Issued</button>
+                          <span className="text-muted-foreground">·</span>
+                          <button onClick={() => openOosModal(pick.id)} className="text-[10px] font-medium text-ops-amber hover:underline">Out of Stock</button>
+                          {pick.status === 'In Progress' && (
+                            <>
+                              <span className="text-muted-foreground">·</span>
+                              <button onClick={() => handleFlagIssue(pick.id)} className="text-[10px] font-medium text-accent hover:underline">Issue</button>
+                            </>
+                          )}
                         </>
                       )}
                       {pick.status === 'Picked' && (
@@ -190,12 +252,60 @@ const PickingOrders = () => {
                 </tr>
               ))}
               {picks.length === 0 && (
-                <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">No picking orders</td></tr>
+                <tr><td colSpan={10} className="px-3 py-10 text-center text-muted-foreground">No picking orders</td></tr>
               )}
             </tbody>
           </table>
         </div>
       </motion.div>
+
+      {/* Out of Stock Modal */}
+      <Dialog open={!!oosPickId} onOpenChange={open => { if (!open) setOosPickId(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Report Out of Stock</DialogTitle>
+          </DialogHeader>
+          {oosPickId && (() => {
+            const pick = picks.find(p => p.id === oosPickId);
+            return (
+              <div className="space-y-3 pt-2">
+                <div className="rounded border border-border bg-muted/30 p-3 space-y-1 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Part Number</span>
+                    <span className="font-mono font-medium text-foreground">{pick?.part_number}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Pick Qty</span>
+                    <span className="font-mono font-medium text-foreground">{pick?.pick_qty}</span>
+                  </div>
+                  {pick?.work_order_number && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Work Order</span>
+                      <span className="font-mono font-medium text-foreground">{pick.work_order_number}</span>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <Label>Quantity Short *</Label>
+                  <Input type="number" min="1" value={oosQtyShort} onChange={e => setOosQtyShort(e.target.value)} />
+                </div>
+                <div>
+                  <Label>Notes</Label>
+                  <Textarea value={oosNotes} onChange={e => setOosNotes(e.target.value)} rows={3} placeholder="Optional notes..." />
+                </div>
+                <Button
+                  onClick={handleOutOfStock}
+                  disabled={createStockIssue.isPending || !oosQtyShort || Number(oosQtyShort) <= 0}
+                  className="w-full"
+                >
+                  {createStockIssue.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                  Report Out of Stock
+                </Button>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
 
       {picks.some(p => p.status === 'Issue') && (
         <div className="space-y-1.5">

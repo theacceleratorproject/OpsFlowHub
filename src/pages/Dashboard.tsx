@@ -1,7 +1,7 @@
 import { useProject } from '@/contexts/ProjectContext';
-import { useBomLines, useSuppliers, useInventory, useTasks, usePartRequests, usePickingOrders, useIssues } from '@/hooks/use-supabase-data';
+import { useBomLines, useSuppliers, useInventory, useTasks, usePartRequests, usePickingOrders, useIssues, useStockIssues } from '@/hooks/use-supabase-data';
 import { motion } from 'framer-motion';
-import { Package, ClipboardList, ShoppingCart, Truck, AlertTriangle, Loader2 } from 'lucide-react';
+import { Package, ClipboardList, ShoppingCart, Truck, AlertTriangle, Loader2, PackageX } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useMemo } from 'react';
 
@@ -18,8 +18,9 @@ const Dashboard = () => {
   const { data: requests = [], isLoading: requestsLoading } = usePartRequests(versionId);
   const { data: picks = [], isLoading: picksLoading } = usePickingOrders(versionId);
   const { data: issues = [], isLoading: issuesLoading } = useIssues(versionId);
+  const { data: stockIssues = [], isLoading: stockIssuesLoading } = useStockIssues(versionId);
 
-  const isLoading = linesLoading || suppliersLoading || inventoryLoading || tasksLoading || requestsLoading || picksLoading || issuesLoading;
+  const isLoading = linesLoading || suppliersLoading || inventoryLoading || tasksLoading || requestsLoading || picksLoading || issuesLoading || stockIssuesLoading;
 
   const inventoryByPart = useMemo(() => {
     const map = new Map<string, typeof inventory[0]>();
@@ -58,6 +59,7 @@ const Dashboard = () => {
     { label: 'Open Requests', value: openRequests, sub: `${requests.length} total`, icon: ShoppingCart, critical: false },
     { label: 'Pending Picks', value: pendingPicks, sub: `${picks.length} total`, icon: Truck, critical: false },
     { label: 'Open Issues', value: openIssues, sub: criticalIssues > 0 ? `${criticalIssues} critical` : 'None critical', icon: AlertTriangle, critical: criticalIssues > 0 },
+    { label: 'Stock Issues', value: stockIssues.length, sub: stockIssues.length > 0 ? `${stockIssues.length} out of stock` : 'None reported', icon: PackageX, critical: stockIssues.length > 0 },
   ];
 
   return (
@@ -73,7 +75,7 @@ const Dashboard = () => {
         </div>
       ) : (
         <>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             {kpis.map((kpi, i) => {
               const Icon = kpi.icon;
               return (
@@ -99,7 +101,7 @@ const Dashboard = () => {
             })}
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid gap-3 lg:grid-cols-3">
             <div className="kpi-card">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">
                 Task Progress by Phase
@@ -152,6 +154,37 @@ const Dashboard = () => {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+
+            <div className="kpi-card">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">
+                Stock Issues
+              </h3>
+              {stockIssues.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No stock issues</p>
+              ) : (
+                <div className="space-y-2">
+                  {stockIssues.slice(0, 4).map(si => (
+                    <div key={si.id} className="flex items-start gap-2.5 rounded border border-accent/15 bg-accent/5 p-2.5">
+                      <div className="mt-1 h-1.5 w-1.5 rounded-full shrink-0 bg-ops-amber" />
+                      <div className="min-w-0">
+                        <p className="text-xs text-foreground truncate">
+                          <span className="font-mono font-medium">{si.part_number}</span>
+                          {si.part_description && <span className="text-muted-foreground"> — {si.part_description}</span>}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          Qty short: <span className="font-mono text-accent font-semibold">{si.quantity_short}</span>
+                          {si.work_order_number && <> · {si.work_order_number}</>}
+                          {si.reported_by && <> · {si.reported_by.split('@')[0]}</>}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                  {stockIssues.length > 4 && (
+                    <p className="text-[10px] text-muted-foreground text-center">+{stockIssues.length - 4} more</p>
+                  )}
                 </div>
               )}
             </div>

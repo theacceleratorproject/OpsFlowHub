@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ProjectProvider, useProject } from "@/contexts/ProjectContext";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import Layout from "@/components/Layout";
 import ProjectSelector from "./pages/ProjectSelector";
 import Dashboard from "./pages/Dashboard";
@@ -13,19 +14,49 @@ import Tasks from "./pages/Tasks";
 import PartRequests from "./pages/PartRequests";
 import PickingOrders from "./pages/PickingOrders";
 import Issues from "./pages/Issues";
+import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
+import { Loader2 } from "lucide-react";
 
 const queryClient = new QueryClient();
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
+  const { session, loading } = useAuth();
   const { selectedProject, selectedVersion } = useProject();
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!session) return <Navigate to="/login" replace />;
   if (!selectedProject || !selectedVersion) return <Navigate to="/" replace />;
+
   return <Layout>{children}</Layout>;
+};
+
+const AuthGate = ({ children }: { children: React.ReactNode }) => {
+  const { session, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!session) return <Navigate to="/login" replace />;
+  return <>{children}</>;
 };
 
 const AppRoutes = () => (
   <Routes>
-    <Route path="/" element={<ProjectSelector />} />
+    <Route path="/login" element={<Login />} />
+    <Route path="/" element={<AuthGate><ProjectSelector /></AuthGate>} />
     <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
     <Route path="/bom" element={<ProtectedRoute><BOM /></ProtectedRoute>} />
     <Route path="/materials" element={<ProtectedRoute><Materials /></ProtectedRoute>} />
@@ -42,11 +73,13 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <ProjectProvider>
-        <BrowserRouter>
-          <AppRoutes />
-        </BrowserRouter>
-      </ProjectProvider>
+      <AuthProvider>
+        <ProjectProvider>
+          <BrowserRouter>
+            <AppRoutes />
+          </BrowserRouter>
+        </ProjectProvider>
+      </AuthProvider>
     </TooltipProvider>
   </QueryClientProvider>
 );

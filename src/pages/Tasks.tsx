@@ -1,4 +1,5 @@
 import { useProject } from '@/contexts/ProjectContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { useTasks, useTaskSteps, useCreateTask, useCreateTaskSteps, useUpdateTask, useUpdateTaskStep, type TaskRow, type TaskStepRow } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -36,10 +37,12 @@ const TaskCard = ({
   task,
   expandedTaskId,
   onToggleExpand,
+  canEdit,
 }: {
   task: TaskRow;
   expandedTaskId: string | null;
   onToggleExpand: (id: string) => void;
+  canEdit: boolean;
 }) => {
   const isExpanded = expandedTaskId === task.id;
   const { data: steps = [] } = useTaskSteps(isExpanded ? task.id : undefined);
@@ -121,8 +124,12 @@ const TaskCard = ({
               {steps.map(step => (
                 <button
                   key={step.id}
-                  onClick={() => handleToggleStep(step)}
-                  className="flex items-center gap-2 text-[11px] w-full text-left py-0.5 rounded hover:bg-muted/30 transition-colors group/step"
+                  onClick={() => canEdit && handleToggleStep(step)}
+                  disabled={!canEdit}
+                  className={cn(
+                    "flex items-center gap-2 text-[11px] w-full text-left py-0.5 rounded transition-colors group/step",
+                    canEdit ? "hover:bg-muted/30 cursor-pointer" : "cursor-not-allowed opacity-60"
+                  )}
                 >
                   <div className={cn(
                     "h-3.5 w-3.5 rounded-sm border flex items-center justify-center shrink-0 transition-colors",
@@ -248,6 +255,7 @@ const CalendarView = ({ tasks, selectedDate, onSelectDate }: { tasks: TaskRow[];
 
 const Tasks = () => {
   const { selectedProject, selectedVersion } = useProject();
+  const { isAdmin, canEdit } = useAuth();
   const versionId = selectedVersion?.id;
   const { data: tasks = [], isLoading } = useTasks(versionId);
   const createTask = useCreateTask();
@@ -317,6 +325,7 @@ const Tasks = () => {
           <p className="text-xs text-muted-foreground">{tasks.length} tasks</p>
         </div>
         <div className="flex items-center gap-2">
+          {isAdmin && (
           <Dialog open={showCreateForm} onOpenChange={setShowCreateForm}>
             <DialogTrigger asChild>
               <button className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90">
@@ -374,6 +383,7 @@ const Tasks = () => {
               </div>
             </DialogContent>
           </Dialog>
+          )}
 
           <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
             <button
@@ -425,6 +435,7 @@ const Tasks = () => {
                       task={task}
                       expandedTaskId={expandedTaskId}
                       onToggleExpand={toggleExpand}
+                      canEdit={canEdit}
                     />
                   ))}
                 </div>
@@ -437,7 +448,7 @@ const Tasks = () => {
               <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Unassigned Phase</h3>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {tasks.filter(t => !t.phase || !phaseOrder.includes(t.phase as typeof phaseOrder[number])).map(task => (
-                  <TaskCard key={task.id} task={task} expandedTaskId={expandedTaskId} onToggleExpand={toggleExpand} />
+                  <TaskCard key={task.id} task={task} expandedTaskId={expandedTaskId} onToggleExpand={toggleExpand} canEdit={canEdit} />
                 ))}
               </div>
             </motion.div>

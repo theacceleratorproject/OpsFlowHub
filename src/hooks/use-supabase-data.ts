@@ -13,6 +13,7 @@ export type TaskStepRow = Tables<'task_steps'>;
 export type PartRequestRow = Tables<'part_requests'>;
 export type PickingOrderRow = Tables<'picking_orders'>;
 export type IssueRow = Tables<'issues'>;
+export type StockIssueRow = Tables<'stock_issues'>;
 
 // ── Existing hooks (BOM / Suppliers / Inventory) ──────────────────
 
@@ -32,6 +33,22 @@ export const useBomLines = (projectVersionId?: string) =>
       return data as BomLineRow[];
     },
   });
+
+export const useCreateBomLines = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (lines: TablesInsert<'bom_lines'>[]) => {
+      const { data, error } = await supabase.from('bom_lines').insert(lines).select();
+      if (error) throw error;
+      return data as BomLineRow[];
+    },
+    onSuccess: (_data, variables) => {
+      if (variables.length > 0) {
+        qc.invalidateQueries({ queryKey: ['bom_lines', variables[0].project_version_id] });
+      }
+    },
+  });
+};
 
 export const useSuppliers = () =>
   useQuery({
@@ -295,6 +312,22 @@ export const useCreatePickingOrder = () => {
   });
 };
 
+export const useCreatePickingOrders = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (orders: TablesInsert<'picking_orders'>[]) => {
+      const { data, error } = await supabase.from('picking_orders').insert(orders).select();
+      if (error) throw error;
+      return data as PickingOrderRow[];
+    },
+    onSuccess: (_data, variables) => {
+      if (variables.length > 0) {
+        qc.invalidateQueries({ queryKey: ['picking_orders', variables[0].version_id] });
+      }
+    },
+  });
+};
+
 export const useUpdatePickingOrder = () => {
   const qc = useQueryClient();
   return useMutation({
@@ -350,6 +383,37 @@ export const useUpdateIssue = () => {
     },
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['issues', data.version_id] });
+    },
+  });
+};
+
+// ── Stock Issues ─────────────────────────────────────────────────
+
+export const useStockIssues = (versionId?: string) =>
+  useQuery({
+    queryKey: ['stock_issues', versionId],
+    enabled: !!versionId,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('stock_issues')
+        .select('*')
+        .eq('version_id', versionId!)
+        .order('issue_date', { ascending: false });
+      if (error) throw error;
+      return data as StockIssueRow[];
+    },
+  });
+
+export const useCreateStockIssue = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (issue: TablesInsert<'stock_issues'>) => {
+      const { data, error } = await supabase.from('stock_issues').insert(issue).select().single();
+      if (error) throw error;
+      return data as StockIssueRow;
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ['stock_issues', variables.version_id] });
     },
   });
 };

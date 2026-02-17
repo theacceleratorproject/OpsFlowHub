@@ -1,8 +1,9 @@
 import { useProject } from '@/contexts/ProjectContext';
-import { useIssues, useCreateIssue, useUpdateIssue } from '@/hooks/use-supabase-data';
+import { useAuth } from '@/contexts/AuthContext';
+import { useIssues, useCreateIssue, useUpdateIssue, useStockIssues } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
-import { AlertTriangle, Plus, Loader2 } from 'lucide-react';
+import { AlertTriangle, Plus, Loader2, PackageX } from 'lucide-react';
 import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -16,10 +17,12 @@ const statusOrder = ['Open', 'In Progress', 'Resolved', 'Closed'] as const;
 
 const Issues = () => {
   const { selectedProject, selectedVersion } = useProject();
+  const { isAdmin, canEdit, user } = useAuth();
   const versionId = selectedVersion?.id;
   const { data: issues = [], isLoading } = useIssues(versionId);
   const createIssue = useCreateIssue();
   const updateIssue = useUpdateIssue();
+  const { data: stockIssues = [] } = useStockIssues(versionId);
 
   const [showCreate, setShowCreate] = useState(false);
   const [newIssue, setNewIssue] = useState({
@@ -38,7 +41,7 @@ const Issues = () => {
         related_module: newIssue.related_module,
         priority: newIssue.priority,
         assigned_to: newIssue.assigned_to.trim() || null,
-        raised_by: newIssue.raised_by.trim() || 'current.user@opspulse.io',
+        raised_by: newIssue.raised_by.trim() || (user?.email ?? ''),
       });
       toast.success('Issue created');
       setShowCreate(false);
@@ -94,6 +97,7 @@ const Issues = () => {
           </h2>
           <p className="text-xs text-muted-foreground">{issues.length} issues</p>
         </div>
+        {canEdit && (
         <Dialog open={showCreate} onOpenChange={setShowCreate}>
           <DialogTrigger asChild>
             <button className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90">
@@ -151,6 +155,7 @@ const Issues = () => {
             </div>
           </DialogContent>
         </Dialog>
+        )}
       </div>
 
       {statusOrder.map(status => {
@@ -186,13 +191,13 @@ const Issues = () => {
                     </div>
                   )}
                   <div className="mt-2 flex gap-2">
-                    {issue.status === 'Open' && (
+                    {issue.status === 'Open' && canEdit && (
                       <button onClick={() => handleStartProgress(issue.id)} className="text-[10px] font-medium text-foreground hover:underline">Start Progress</button>
                     )}
-                    {(issue.status === 'Open' || issue.status === 'In Progress') && (
+                    {(issue.status === 'Open' || issue.status === 'In Progress') && isAdmin && (
                       <button onClick={() => handleResolve(issue.id)} className="text-[10px] font-medium text-ops-green hover:underline">Resolve</button>
                     )}
-                    {issue.status === 'Resolved' && (
+                    {issue.status === 'Resolved' && isAdmin && (
                       <button onClick={() => handleClose(issue.id)} className="text-[10px] font-medium text-muted-foreground hover:underline">Close</button>
                     )}
                   </div>
@@ -206,6 +211,47 @@ const Issues = () => {
       {issues.length === 0 && (
         <div className="text-center py-10 text-xs text-muted-foreground">No issues logged</div>
       )}
+
+      {/* Stock Issues Dashboard */}
+      <div className="pt-4 border-t border-border">
+        <h2 className="text-lg font-semibold text-foreground flex items-center gap-2 mb-3">
+          <PackageX className="h-4 w-4 text-muted-foreground" /> Stock Issues
+        </h2>
+        {stockIssues.length === 0 ? (
+          <div className="text-center py-10 text-xs text-muted-foreground">No stock issues reported</div>
+        ) : (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="rounded-md border border-border bg-card overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border bg-muted/40">
+                    <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">WO#</th>
+                    <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Part</th>
+                    <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Description</th>
+                    <th className="px-3 py-2.5 text-right font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Qty Short</th>
+                    <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Reported By</th>
+                    <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Date</th>
+                    <th className="px-3 py-2.5 text-left font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stockIssues.map(si => (
+                    <tr key={si.id} className="data-table-row bg-accent/5">
+                      <td className="px-3 py-2.5 font-mono text-muted-foreground">{si.work_order_number ?? '—'}</td>
+                      <td className="px-3 py-2.5 font-mono font-medium text-foreground">{si.part_number}</td>
+                      <td className="px-3 py-2.5 text-muted-foreground">{si.part_description ?? '—'}</td>
+                      <td className="px-3 py-2.5 text-right font-mono text-accent font-semibold">{si.quantity_short}</td>
+                      <td className="px-3 py-2.5 text-muted-foreground">{si.reported_by ? si.reported_by.split('@')[0] : '—'}</td>
+                      <td className="px-3 py-2.5 text-muted-foreground">{new Date(si.issue_date).toLocaleDateString()}</td>
+                      <td className="px-3 py-2.5 text-muted-foreground">{si.notes ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </motion.div>
+        )}
+      </div>
     </div>
   );
 };

@@ -1,9 +1,11 @@
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
-import { FileText, Search, ChevronRight, ArrowLeft, AlertTriangle, Loader2 } from 'lucide-react';
+import { FileText, Search, ChevronRight, ArrowLeft, AlertTriangle, Loader2, Upload, Filter } from 'lucide-react';
 import { useState, useMemo, useCallback } from 'react';
-import { useBomLines, useSuppliers, useInventory, BomLineRow } from '@/hooks/use-supabase-data';
+import { useBomLines, useSuppliers, useInventory } from '@/hooks/use-supabase-data';
 import { useProject } from '@/contexts/ProjectContext';
+import { useAuth } from '@/contexts/AuthContext';
+import BomUpload from '@/components/BomUpload';
 
 // A "BOM" is represented by bom_level=0 rows; children are bom_level>0 under the same upload_batch_id
 interface BomHeader {
@@ -17,11 +19,14 @@ interface BomHeader {
 
 const BOM = () => {
   const { selectedVersion } = useProject();
+  const { canEdit } = useAuth();
   const versionId = selectedVersion?.id;
   const [search, setSearch] = useState('');
   const [selectedBom, setSelectedBom] = useState<BomHeader | null>(null);
   const [lineSearch, setLineSearch] = useState('');
   const [showAtRiskOnly, setShowAtRiskOnly] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
+  const [inventoryFilter, setInventoryFilter] = useState<'All' | 'On Hand' | 'On Order' | 'Not in System'>('All');
 
   const { data: allLines = [], isLoading: linesLoading } = useBomLines(versionId);
   const { data: suppliers = [], isLoading: suppliersLoading } = useSuppliers();
@@ -85,6 +90,17 @@ const BOM = () => {
     return { onHand, onOrder, variance, status };
   }, [inventoryByPart]);
 
+  // Inventory status for Prompt E cross-reference
+  const getInventoryStatus = useCallback((partNumber: string, requiredQty: number): 'On Hand' | 'On Order' | 'Not in System' => {
+    const inv = inventoryByPart.get(partNumber);
+    if (!inv) return 'Not in System';
+    const onHand = inv.on_hand_qty ?? 0;
+    const onOrder = inv.on_order_qty ?? 0;
+    if (onHand >= requiredQty) return 'On Hand';
+    if (onOrder > 0) return 'On Order';
+    return 'Not in System';
+  }, [inventoryByPart]);
+
   // Risk detection for BOM cards
   const bomHasRisk = useCallback((uploadBatchId: string) => {
     return allLines
@@ -108,6 +124,25 @@ const BOM = () => {
     }, 0);
   }, [children, supplierByPart]);
 
+  // Availability summary for detail view
+  const availabilitySummary = useMemo(() => {
+    const counts = { 'On Hand': 0, 'On Order': 0, 'Not in System': 0 };
+    children.forEach(l => {
+      const invStatus = getInventoryStatus(l.component_number, Number(l.required_qty));
+      counts[invStatus]++;
+    });
+    return counts;
+  }, [children, getInventoryStatus]);
+
+  // Children filtered by inventory status
+  const filteredChildren = useMemo(() => {
+    if (inventoryFilter === 'All') return children;
+    return children.filter(l => {
+      const invStatus = getInventoryStatus(l.component_number, Number(l.required_qty));
+      return invStatus === inventoryFilter;
+    });
+  }, [children, inventoryFilter, getInventoryStatus]);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -123,7 +158,7 @@ const BOM = () => {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <button
-              onClick={() => { setSelectedBom(null); setLineSearch(''); }}
+              onClick={() => { setSelectedBom(null); setLineSearch(''); setInventoryFilter('All'); }}
               className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-1 transition-colors"
             >
               <ArrowLeft className="h-3 w-3" /> All BOMs
@@ -154,6 +189,40 @@ const BOM = () => {
           </div>
         </div>
 
+        {/* Availability Summary */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1.5 rounded border border-border bg-card px-3 py-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-ops-green">{availabilitySummary['On Hand']}</span>
+            <span className="text-[10px] text-muted-foreground">On Hand</span>
+          </div>
+          <div className="flex items-center gap-1.5 rounded border border-border bg-card px-3 py-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-ops-amber">{availabilitySummary['On Order']}</span>
+            <span className="text-[10px] text-muted-foreground">On Order</span>
+          </div>
+          <div className="flex items-center gap-1.5 rounded border border-border bg-card px-3 py-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-accent">{availabilitySummary['Not in System']}</span>
+            <span className="text-[10px] text-muted-foreground">Not in System</span>
+          </div>
+
+          <div className="h-4 w-px bg-border" />
+
+          {(['All', 'On Hand', 'On Order', 'Not in System'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setInventoryFilter(f)}
+              className={cn(
+                "flex items-center gap-1 rounded border px-2.5 py-1.5 text-[11px] font-medium transition-colors",
+                inventoryFilter === f
+                  ? "border-foreground/30 bg-foreground/10 text-foreground"
+                  : "border-border bg-card text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {f !== 'All' && <Filter className="h-3 w-3" />}
+              {f}
+            </button>
+          ))}
+        </div>
+
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="rounded-md border border-border bg-card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -171,15 +240,16 @@ const BOM = () => {
                   <th className="px-3 py-2.5 text-right font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">On Hand</th>
                   <th className="px-3 py-2.5 text-right font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">On Order</th>
                   <th className="px-3 py-2.5 text-right font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Variance</th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Stock</th>
+                  <th className="px-3 py-2.5 text-center font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Inv. Status</th>
                 </tr>
               </thead>
               <tbody>
-                {children.map((line) => {
+                {filteredChildren.map((line) => {
                   const sup = supplierByPart.get(line.component_number);
                   const unitCost = sup?.unit_cost ?? Number(line.standard_price) ?? 0;
                   const reqQty = Number(line.required_qty);
-                  const { onHand, onOrder, variance, status } = getStockStatus(line.component_number, reqQty);
+                  const { onHand, onOrder, variance } = getStockStatus(line.component_number, reqQty);
+                  const invStatus = getInventoryStatus(line.component_number, reqQty);
 
                   return (
                     <tr key={line.id} className="data-table-row">
@@ -205,23 +275,19 @@ const BOM = () => {
                         {variance ?? '—'}
                       </td>
                       <td className="px-3 py-2.5 text-center">
-                        {status ? (
-                          <span className={cn(
-                            "inline-block text-[10px] font-semibold uppercase tracking-wider",
-                            status === 'Available' && "text-ops-green",
-                            status === 'Short' && "text-ops-amber",
-                            status === 'Critical' && "text-accent",
-                          )}>
-                            {status}
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-muted-foreground">N/A</span>
-                        )}
+                        <span className={cn(
+                          "inline-block text-[10px] font-semibold uppercase tracking-wider",
+                          invStatus === 'On Hand' && "text-ops-green",
+                          invStatus === 'On Order' && "text-ops-amber",
+                          invStatus === 'Not in System' && "text-accent",
+                        )}>
+                          {invStatus}
+                        </span>
                       </td>
                     </tr>
                   );
                 })}
-                {children.length === 0 && (
+                {filteredChildren.length === 0 && (
                   <tr><td colSpan={13} className="px-3 py-10 text-center text-muted-foreground">No parts found</td></tr>
                 )}
               </tbody>
@@ -243,6 +309,15 @@ const BOM = () => {
           <p className="text-xs text-muted-foreground">{filteredBoms.length} of {bomHeaders.length} BOMs</p>
         </div>
         <div className="flex items-center gap-2">
+          {canEdit && (
+            <button
+              onClick={() => setShowUpload(true)}
+              className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Upload BOM
+            </button>
+          )}
           <button
             onClick={() => setShowAtRiskOnly(prev => !prev)}
             className={cn(
@@ -323,6 +398,8 @@ const BOM = () => {
           </div>
         )}
       </motion.div>
+
+      <BomUpload open={showUpload} onOpenChange={setShowUpload} />
     </div>
   );
 };

@@ -1,8 +1,9 @@
 import { useProject } from '@/contexts/ProjectContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { useProjects, useProjectVersions, useCreateProject, useCreateProjectVersion, type ProjectRow, type ProjectVersionRow } from '@/hooks/use-supabase-data';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowRight, ArrowLeft, Plus, Loader2 } from 'lucide-react';
+import { ArrowRight, ArrowLeft, Plus, Loader2, LogOut } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -13,6 +14,7 @@ import { toast } from 'sonner';
 
 const ProjectSelector = () => {
   const { setSelectedProject, setSelectedVersion } = useProject();
+  const { isAdmin, user, profile, signOut } = useAuth();
   const navigate = useNavigate();
   const [activeProject, setActiveProject] = useState<ProjectRow | null>(null);
 
@@ -92,9 +94,33 @@ const ProjectSelector = () => {
               </h1>
             </div>
             <div className="ops-accent-line mb-4" />
-            <p className="text-primary-foreground/50 text-sm">
-              {activeProject ? `Select version for ${activeProject.project_name}` : 'Select a project to continue'}
-            </p>
+            <div className="flex items-center justify-between">
+              <p className="text-primary-foreground/50 text-sm">
+                {activeProject ? `Select version for ${activeProject.project_name}` : 'Select a project to continue'}
+              </p>
+              {user && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-primary-foreground/50">{profile?.full_name || user.email}</span>
+                  {profile && (
+                    <span className={cn(
+                      "text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded",
+                      profile.role === 'admin' && "text-accent bg-accent/15",
+                      profile.role === 'member' && "text-primary-foreground bg-primary-foreground/10",
+                      profile.role === 'viewer' && "text-muted-foreground bg-muted-foreground/10",
+                    )}>
+                      {profile.role}
+                    </span>
+                  )}
+                  <button
+                    onClick={async () => { await signOut(); navigate('/login'); }}
+                    className="flex items-center gap-1 text-xs text-primary-foreground/40 transition-colors hover:text-primary-foreground"
+                    title="Sign out"
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
           </motion.div>
         </div>
       </div>
@@ -151,53 +177,55 @@ const ProjectSelector = () => {
                     </motion.div>
                   ))}
 
-                  {/* Create Project Card */}
-                  <Dialog open={showCreateProject} onOpenChange={setShowCreateProject}>
-                    <DialogTrigger asChild>
-                      <motion.button
-                        initial={{ opacity: 0, y: 12 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.3, delay: projects.length * 0.05 }}
-                        className="module-card w-full text-left border-dashed flex flex-col items-center justify-center py-8 text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        <Plus className="h-6 w-6 mb-2" />
-                        <span className="text-sm font-medium">Create Project</span>
-                      </motion.button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>Create New Project</DialogTitle>
-                      </DialogHeader>
-                      <div className="space-y-3 pt-2">
-                        <div>
-                          <Label>Project Name *</Label>
-                          <Input value={newProject.project_name} onChange={e => setNewProject(p => ({ ...p, project_name: e.target.value }))} placeholder="e.g. ICEPACK" />
-                        </div>
-                        <div>
-                          <Label>Customer</Label>
-                          <Input value={newProject.customer} onChange={e => setNewProject(p => ({ ...p, customer: e.target.value }))} placeholder="e.g. Celestica Inc" />
-                        </div>
-                        <div>
-                          <Label>Project Lead</Label>
-                          <Input value={newProject.project_lead} onChange={e => setNewProject(p => ({ ...p, project_lead: e.target.value }))} />
-                        </div>
-                        <div className="grid grid-cols-2 gap-3">
+                  {/* Create Project Card — admin only */}
+                  {isAdmin && (
+                    <Dialog open={showCreateProject} onOpenChange={setShowCreateProject}>
+                      <DialogTrigger asChild>
+                        <motion.button
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: 0.3, delay: projects.length * 0.05 }}
+                          className="module-card w-full text-left border-dashed flex flex-col items-center justify-center py-8 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <Plus className="h-6 w-6 mb-2" />
+                          <span className="text-sm font-medium">Create Project</span>
+                        </motion.button>
+                      </DialogTrigger>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>Create New Project</DialogTitle>
+                        </DialogHeader>
+                        <div className="space-y-3 pt-2">
                           <div>
-                            <Label>Start Date</Label>
-                            <Input type="date" value={newProject.start_date} onChange={e => setNewProject(p => ({ ...p, start_date: e.target.value }))} />
+                            <Label>Project Name *</Label>
+                            <Input value={newProject.project_name} onChange={e => setNewProject(p => ({ ...p, project_name: e.target.value }))} placeholder="e.g. ICEPACK" />
                           </div>
                           <div>
-                            <Label>Target End Date</Label>
-                            <Input type="date" value={newProject.target_end_date} onChange={e => setNewProject(p => ({ ...p, target_end_date: e.target.value }))} />
+                            <Label>Customer</Label>
+                            <Input value={newProject.customer} onChange={e => setNewProject(p => ({ ...p, customer: e.target.value }))} placeholder="e.g. Celestica Inc" />
                           </div>
+                          <div>
+                            <Label>Project Lead</Label>
+                            <Input value={newProject.project_lead} onChange={e => setNewProject(p => ({ ...p, project_lead: e.target.value }))} />
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <Label>Start Date</Label>
+                              <Input type="date" value={newProject.start_date} onChange={e => setNewProject(p => ({ ...p, start_date: e.target.value }))} />
+                            </div>
+                            <div>
+                              <Label>Target End Date</Label>
+                              <Input type="date" value={newProject.target_end_date} onChange={e => setNewProject(p => ({ ...p, target_end_date: e.target.value }))} />
+                            </div>
+                          </div>
+                          <Button onClick={handleCreateProject} disabled={createProject.isPending || !newProject.project_name.trim()} className="w-full">
+                            {createProject.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                            Create Project
+                          </Button>
                         </div>
-                        <Button onClick={handleCreateProject} disabled={createProject.isPending || !newProject.project_name.trim()} className="w-full">
-                          {createProject.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                          Create Project
-                        </Button>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
+                      </DialogContent>
+                    </Dialog>
+                  )}
                 </div>
               )}
 
@@ -253,35 +281,37 @@ const ProjectSelector = () => {
                     </motion.div>
                   ))}
 
-                  {/* Add Version Card */}
-                  <Dialog open={showCreateVersion} onOpenChange={setShowCreateVersion}>
-                    <DialogTrigger asChild>
-                      <motion.button
-                        initial={{ opacity: 0, y: 12 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.3, delay: versions.length * 0.05 }}
-                        className="module-card w-full text-left border-dashed flex flex-col items-center justify-center py-8 text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        <Plus className="h-6 w-6 mb-2" />
-                        <span className="text-sm font-medium">Add Version</span>
-                      </motion.button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>Add Version to {activeProject.project_name}</DialogTitle>
-                      </DialogHeader>
-                      <div className="space-y-3 pt-2">
-                        <div>
-                          <Label>Version Name *</Label>
-                          <Input value={newVersionName} onChange={e => setNewVersionName(e.target.value)} placeholder="e.g. V1.0" />
+                  {/* Add Version Card — admin only */}
+                  {isAdmin && (
+                    <Dialog open={showCreateVersion} onOpenChange={setShowCreateVersion}>
+                      <DialogTrigger asChild>
+                        <motion.button
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: 0.3, delay: versions.length * 0.05 }}
+                          className="module-card w-full text-left border-dashed flex flex-col items-center justify-center py-8 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <Plus className="h-6 w-6 mb-2" />
+                          <span className="text-sm font-medium">Add Version</span>
+                        </motion.button>
+                      </DialogTrigger>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>Add Version to {activeProject.project_name}</DialogTitle>
+                        </DialogHeader>
+                        <div className="space-y-3 pt-2">
+                          <div>
+                            <Label>Version Name *</Label>
+                            <Input value={newVersionName} onChange={e => setNewVersionName(e.target.value)} placeholder="e.g. V1.0" />
+                          </div>
+                          <Button onClick={handleCreateVersion} disabled={createVersion.isPending || !newVersionName.trim()} className="w-full">
+                            {createVersion.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                            Add Version
+                          </Button>
                         </div>
-                        <Button onClick={handleCreateVersion} disabled={createVersion.isPending || !newVersionName.trim()} className="w-full">
-                          {createVersion.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                          Add Version
-                        </Button>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
+                      </DialogContent>
+                    </Dialog>
+                  )}
                 </div>
               )}
 
