@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -6,30 +7,39 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ProjectProvider, useProject } from "@/contexts/ProjectContext";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import Layout from "@/components/Layout";
-import ProjectSelector from "./pages/ProjectSelector";
-import Dashboard from "./pages/Dashboard";
-import BOM from "./pages/BOM";
-import Materials from "./pages/Materials";
-import Tasks from "./pages/Tasks";
-import PartRequests from "./pages/PartRequests";
-import PickingOrders from "./pages/PickingOrders";
-import Issues from "./pages/Issues";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
 import { Loader2 } from "lucide-react";
 
-const queryClient = new QueryClient();
+const ProjectSelector = lazy(() => import("./pages/ProjectSelector"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const BOM = lazy(() => import("./pages/BOM"));
+const Materials = lazy(() => import("./pages/Materials"));
+const Tasks = lazy(() => import("./pages/Tasks"));
+const PartRequests = lazy(() => import("./pages/PartRequests"));
+const PickingOrders = lazy(() => import("./pages/PickingOrders"));
+const Issues = lazy(() => import("./pages/Issues"));
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+    },
+  },
+});
+
+const PageLoader = () => (
+  <div className="flex items-center justify-center min-h-screen">
+    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+  </div>
+);
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { session, loading } = useAuth();
   const { selectedProject, selectedVersion } = useProject();
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <PageLoader />;
   }
 
   if (!session) return <Navigate to="/login" replace />;
@@ -42,11 +52,7 @@ const AuthGate = ({ children }: { children: React.ReactNode }) => {
   const { session, loading } = useAuth();
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <PageLoader />;
   }
 
   if (!session) return <Navigate to="/login" replace />;
@@ -54,18 +60,20 @@ const AuthGate = ({ children }: { children: React.ReactNode }) => {
 };
 
 const AppRoutes = () => (
-  <Routes>
-    <Route path="/login" element={<Login />} />
-    <Route path="/" element={<AuthGate><ProjectSelector /></AuthGate>} />
-    <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-    <Route path="/bom" element={<ProtectedRoute><BOM /></ProtectedRoute>} />
-    <Route path="/materials" element={<ProtectedRoute><Materials /></ProtectedRoute>} />
-    <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
-    <Route path="/part-requests" element={<ProtectedRoute><PartRequests /></ProtectedRoute>} />
-    <Route path="/picking-orders" element={<ProtectedRoute><PickingOrders /></ProtectedRoute>} />
-    <Route path="/issues" element={<ProtectedRoute><Issues /></ProtectedRoute>} />
-    <Route path="*" element={<NotFound />} />
-  </Routes>
+  <Suspense fallback={<PageLoader />}>
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/" element={<AuthGate><ProjectSelector /></AuthGate>} />
+      <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+      <Route path="/bom" element={<ProtectedRoute><BOM /></ProtectedRoute>} />
+      <Route path="/materials" element={<ProtectedRoute><Materials /></ProtectedRoute>} />
+      <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
+      <Route path="/part-requests" element={<ProtectedRoute><PartRequests /></ProtectedRoute>} />
+      <Route path="/picking-orders" element={<ProtectedRoute><PickingOrders /></ProtectedRoute>} />
+      <Route path="/issues" element={<ProtectedRoute><Issues /></ProtectedRoute>} />
+      <Route path="*" element={<NotFound />} />
+    </Routes>
+  </Suspense>
 );
 
 const App = () => (

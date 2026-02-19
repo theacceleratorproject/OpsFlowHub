@@ -17,9 +17,12 @@ export type StockIssueRow = Tables<'stock_issues'>;
 
 // ── Existing hooks (BOM / Suppliers / Inventory) ──────────────────
 
+const STALE_TIME = 5 * 60 * 1000; // 5 minutes
+
 export const useBomLines = (projectVersionId?: string) =>
   useQuery({
     queryKey: ['bom_lines', projectVersionId],
+    staleTime: STALE_TIME,
     queryFn: async () => {
       let query = supabase
         .from('bom_lines')
@@ -53,6 +56,7 @@ export const useCreateBomLines = () => {
 export const useSuppliers = () =>
   useQuery({
     queryKey: ['suppliers'],
+    staleTime: STALE_TIME,
     queryFn: async () => {
       const { data, error } = await supabase.from('suppliers').select('*');
       if (error) throw error;
@@ -63,6 +67,7 @@ export const useSuppliers = () =>
 export const useInventory = (projectVersionId?: string) =>
   useQuery({
     queryKey: ['inventory', projectVersionId],
+    staleTime: STALE_TIME,
     queryFn: async () => {
       let query = supabase.from('inventory').select('*');
       if (projectVersionId) {
@@ -79,6 +84,7 @@ export const useInventory = (projectVersionId?: string) =>
 export const useProjects = () =>
   useQuery({
     queryKey: ['projects'],
+    staleTime: STALE_TIME,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('projects')
@@ -119,6 +125,7 @@ export const useProjectVersions = (projectId?: string) =>
   useQuery({
     queryKey: ['project_versions', projectId],
     enabled: !!projectId,
+    staleTime: STALE_TIME,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('project_versions')
@@ -150,6 +157,7 @@ export const useTasks = (versionId?: string) =>
   useQuery({
     queryKey: ['tasks', versionId],
     enabled: !!versionId,
+    staleTime: STALE_TIME,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('tasks')
@@ -195,6 +203,7 @@ export const useTaskSteps = (taskId?: string) =>
   useQuery({
     queryKey: ['task_steps', taskId],
     enabled: !!taskId,
+    staleTime: STALE_TIME,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('task_steps')
@@ -242,6 +251,7 @@ export const usePartRequests = (versionId?: string) =>
   useQuery({
     queryKey: ['part_requests', versionId],
     enabled: !!versionId,
+    staleTime: STALE_TIME,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('part_requests')
@@ -287,6 +297,7 @@ export const usePickingOrders = (versionId?: string) =>
   useQuery({
     queryKey: ['picking_orders', versionId],
     enabled: !!versionId,
+    staleTime: STALE_TIME,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('picking_orders')
@@ -348,6 +359,7 @@ export const useIssues = (versionId?: string) =>
   useQuery({
     queryKey: ['issues', versionId],
     enabled: !!versionId,
+    staleTime: STALE_TIME,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('issues')
@@ -393,6 +405,7 @@ export const useStockIssues = (versionId?: string) =>
   useQuery({
     queryKey: ['stock_issues', versionId],
     enabled: !!versionId,
+    staleTime: STALE_TIME,
     queryFn: async () => {
       const { data, error } = await supabase
         .from('stock_issues')
