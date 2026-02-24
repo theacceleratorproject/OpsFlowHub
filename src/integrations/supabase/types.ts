@@ -230,6 +230,102 @@ export type Database = {
         }
         Relationships: []
       }
+      work_orders: {
+        Row: {
+          id: string
+          project_id: string
+          version_id: string | null
+          work_order_number: string
+          bom_header_id: string | null
+          mode: string
+          status: string
+          notes: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          project_id: string
+          version_id?: string | null
+          work_order_number: string
+          bom_header_id?: string | null
+          mode?: string
+          status?: string
+          notes?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          project_id?: string
+          version_id?: string | null
+          work_order_number?: string
+          bom_header_id?: string | null
+          mode?: string
+          status?: string
+          notes?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "work_orders_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "work_orders_version_id_fkey"
+            columns: ["version_id"]
+            isOneToOne: false
+            referencedRelation: "project_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "work_orders_bom_header_id_fkey"
+            columns: ["bom_header_id"]
+            isOneToOne: false
+            referencedRelation: "bom_lines"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      work_order_lines: {
+        Row: {
+          id: string
+          work_order_id: string
+          part_number: string
+          description: string | null
+          required_qty: number
+          unit_of_measure: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          work_order_id: string
+          part_number: string
+          description?: string | null
+          required_qty?: number
+          unit_of_measure?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          work_order_id?: string
+          part_number?: string
+          description?: string | null
+          required_qty?: number
+          unit_of_measure?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "work_order_lines_work_order_id_fkey"
+            columns: ["work_order_id"]
+            isOneToOne: false
+            referencedRelation: "work_orders"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
       projects: {
         Row: {
           id: string
@@ -369,6 +465,7 @@ export type Database = {
           weight: number
           complete: boolean
           sort_order: number
+          parent_step_id: string | null
           created_at: string
         }
         Insert: {
@@ -378,6 +475,7 @@ export type Database = {
           weight?: number
           complete?: boolean
           sort_order?: number
+          parent_step_id?: string | null
           created_at?: string
         }
         Update: {
@@ -387,6 +485,7 @@ export type Database = {
           weight?: number
           complete?: boolean
           sort_order?: number
+          parent_step_id?: string | null
           created_at?: string
         }
         Relationships: [
@@ -395,6 +494,13 @@ export type Database = {
             columns: ["task_id"]
             isOneToOne: false
             referencedRelation: "tasks"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "task_steps_parent_step_id_fkey"
+            columns: ["parent_step_id"]
+            isOneToOne: false
+            referencedRelation: "task_steps"
             referencedColumns: ["id"]
           }
         ]
