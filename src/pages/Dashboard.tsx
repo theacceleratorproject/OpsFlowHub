@@ -1,7 +1,7 @@
 import { useProject } from '@/contexts/ProjectContext';
-import { useBomLines, useSuppliers, useInventory, useTasks, usePartRequests, usePickingOrders, useIssues } from '@/hooks/use-supabase-data';
+import { useBomLines, useSuppliers, useInventory, useTasks, usePartRequests, usePickingOrders, useIssues, useWorkOrders } from '@/hooks/use-supabase-data';
 import { motion } from 'framer-motion';
-import { Package, ClipboardList, ShoppingCart, Truck, AlertTriangle, Loader2 } from 'lucide-react';
+import { Package, ClipboardList, ShoppingCart, Truck, AlertTriangle, Loader2, Wrench } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useMemo } from 'react';
 
@@ -18,8 +18,9 @@ const Dashboard = () => {
   const { data: requests = [], isLoading: requestsLoading } = usePartRequests(versionId);
   const { data: picks = [], isLoading: picksLoading } = usePickingOrders(versionId);
   const { data: issues = [], isLoading: issuesLoading } = useIssues(versionId);
+  const { data: workOrders = [], isLoading: woLoading } = useWorkOrders(versionId);
 
-  const isLoading = linesLoading || suppliersLoading || inventoryLoading || tasksLoading || requestsLoading || picksLoading || issuesLoading;
+  const isLoading = linesLoading || suppliersLoading || inventoryLoading || tasksLoading || requestsLoading || picksLoading || issuesLoading || woLoading;
 
   const inventoryByPart = useMemo(() => {
     const map = new Map<string, typeof inventory[0]>();
@@ -28,14 +29,18 @@ const Dashboard = () => {
   }, [inventory]);
 
   const materialStats = useMemo(() => {
-    const parts = allLines.filter(l => l.bom_level > 0);
+    const seen = new Set<string>();
+    const parts = allLines.filter(l => {
+      if (l.bom_level === 0 || seen.has(l.component_number)) return false;
+      seen.add(l.component_number);
+      return true;
+    });
     let critical = 0;
     let short = 0;
     parts.forEach(l => {
       const inv = inventoryByPart.get(l.component_number);
-      if (!inv) return;
-      const onHand = inv.on_hand_qty ?? 0;
-      const onOrder = inv.on_order_qty ?? 0;
+      const onHand = inv?.on_hand_qty ?? 0;
+      const onOrder = inv?.on_order_qty ?? 0;
       const variance = Number(l.required_qty) - onHand - onOrder;
       if (variance > 0 && onHand === 0) critical++;
       else if (variance > 0) short++;
@@ -51,6 +56,8 @@ const Dashboard = () => {
   const pendingPicks = picks.filter(p => p.status === 'Pending' || p.status === 'In Progress').length;
   const criticalIssues = issues.filter(i => i.priority === 'Critical' && i.status === 'Open').length;
   const openIssues = issues.filter(i => i.status === 'Open' || i.status === 'In Progress').length;
+  const openWOs = workOrders.filter(w => w.status === 'Open' || w.status === 'In Progress').length;
+  const inProgressWOs = workOrders.filter(w => w.status === 'In Progress').length;
 
   const kpis = [
     { label: 'Tasks', value: `${completedTasks}/${tasks.length}`, sub: `${taskPercent}% complete`, icon: ClipboardList, critical: false },
@@ -58,6 +65,7 @@ const Dashboard = () => {
     { label: 'Open Requests', value: openRequests, sub: `${requests.length} total`, icon: ShoppingCart, critical: false },
     { label: 'Pending Picks', value: pendingPicks, sub: `${picks.length} total`, icon: Truck, critical: false },
     { label: 'Open Issues', value: openIssues, sub: criticalIssues > 0 ? `${criticalIssues} critical` : 'None critical', icon: AlertTriangle, critical: criticalIssues > 0 },
+    { label: 'Work Orders', value: openWOs, sub: inProgressWOs > 0 ? `${inProgressWOs} in progress` : `${workOrders.length} total`, icon: Wrench, critical: false },
   ];
 
   return (
@@ -73,7 +81,7 @@ const Dashboard = () => {
         </div>
       ) : (
         <>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
             {kpis.map((kpi, i) => {
               const Icon = kpi.icon;
               return (
@@ -99,7 +107,7 @@ const Dashboard = () => {
             })}
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid gap-3 lg:grid-cols-3">
             <div className="kpi-card">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">
                 Task Progress by Phase
@@ -148,6 +156,33 @@ const Dashboard = () => {
                         <p className="text-xs text-foreground truncate">{issue.issue_description.slice(0, 90)}</p>
                         <p className="text-[10px] text-muted-foreground mt-0.5">
                           {issue.priority} · {issue.status} · {issue.related_module ?? 'General'}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="kpi-card">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">
+                Work Orders
+              </h3>
+              {workOrders.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No work orders yet</p>
+              ) : (
+                <div className="space-y-2">
+                  {workOrders.slice(0, 4).map(wo => (
+                    <div key={wo.id} className="flex items-start gap-2.5 rounded border border-border p-2.5">
+                      <div className={cn(
+                        "mt-1 h-1.5 w-1.5 rounded-full shrink-0",
+                        wo.status === 'In Progress' ? "bg-accent" :
+                        wo.status === 'Completed' ? "bg-green-500" : "bg-muted-foreground/40",
+                      )} />
+                      <div className="min-w-0">
+                        <p className="text-xs text-foreground truncate">WO# {wo.work_order_number}</p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          {wo.status} · {wo.mode === 'from_bom' ? 'From BOM' : 'Custom'}
                         </p>
                       </div>
                     </div>

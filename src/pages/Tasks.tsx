@@ -2,7 +2,7 @@ import { useProject } from '@/contexts/ProjectContext';
 import { useTasks, useTaskSteps, useCreateTask, useCreateTaskSteps, useCreateTaskStep, useDeleteTaskStep, useUpdateTask, useUpdateTaskStep, useUpdateTaskSteps, type TaskRow, type TaskStepRow } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ClipboardList, AlertCircle, ChevronDown, Check, CalendarDays, Plus, Loader2, Pencil, Trash2, X } from 'lucide-react';
+import { ClipboardList, AlertCircle, ChevronDown, Check, CalendarDays, Plus, Loader2, Pencil, Trash2, X, BarChart3 } from 'lucide-react';
 import { useState, useMemo, useCallback } from 'react';
 import { Calendar } from '@/components/ui/calendar';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
+import { differenceInDays, addDays, startOfDay, format, eachDayOfInterval, isWithinInterval, isSameDay } from 'date-fns';
 
 const phaseOrder = ['MP', 'EVT', 'DVT', 'PPVT', 'Production'] as const;
 
@@ -23,7 +24,7 @@ const phaseLabels: Record<string, string> = {
   'Production': 'Production',
 };
 
-type ViewMode = 'cards' | 'calendar';
+type ViewMode = 'cards' | 'calendar' | 'gantt';
 
 const DEFAULT_STEPS = [
   'Kitting', 'Serial Number Gen.', 'Pallet Transfer',
@@ -647,37 +648,60 @@ const TaskCard = ({
 };
 
 const CalendarView = ({ tasks, selectedDate, onSelectDate }: { tasks: TaskRow[]; selectedDate: Date | undefined; onSelectDate: (d: Date | undefined) => void }) => {
-  const taskDates = useMemo(() => {
-    const map = new Map<string, TaskRow[]>();
+  // Build modifiers for date ranges
+  const { startEndDates, inRangeDates } = useMemo(() => {
+    const startEnd = new Set<string>();
+    const inRange = new Set<string>();
     tasks.forEach(t => {
-      const dates: string[] = [];
-      if (t.due_date) dates.push(t.due_date.split('T')[0]);
-      if (t.start_date) dates.push(t.start_date.split('T')[0]);
-      dates.forEach(d => {
-        if (!map.has(d)) map.set(d, []);
-        map.get(d)!.push(t);
-      });
+      const s = t.start_date ? startOfDay(new Date(t.start_date)) : null;
+      const e = t.due_date ? startOfDay(new Date(t.due_date)) : null;
+      if (s) startEnd.add(format(s, 'yyyy-MM-dd'));
+      if (e) startEnd.add(format(e, 'yyyy-MM-dd'));
+      if (s && e && differenceInDays(e, s) > 1) {
+        const midStart = addDays(s, 1);
+        const midEnd = addDays(e, -1);
+        if (midStart <= midEnd) {
+          eachDayOfInterval({ start: midStart, end: midEnd }).forEach(d => {
+            inRange.add(format(d, 'yyyy-MM-dd'));
+          });
+        }
+      }
     });
-    return map;
+    return {
+      startEndDates: Array.from(startEnd).map(d => new Date(d + 'T00:00:00')),
+      inRangeDates: Array.from(inRange).map(d => new Date(d + 'T00:00:00')),
+    };
   }, [tasks]);
 
+  // Find tasks that span the selected date
   const tasksForSelected = useMemo(() => {
     if (!selectedDate) return [];
-    const key = selectedDate.toISOString().split('T')[0];
-    return taskDates.get(key) ?? [];
-  }, [selectedDate, taskDates]);
+    const sel = startOfDay(selectedDate);
+    return tasks.filter(t => {
+      const s = t.start_date ? startOfDay(new Date(t.start_date)) : null;
+      const e = t.due_date ? startOfDay(new Date(t.due_date)) : null;
+      if (s && e) return isWithinInterval(sel, { start: s, end: e });
+      if (s) return isSameDay(sel, s);
+      if (e) return isSameDay(sel, e);
+      return false;
+    });
+  }, [selectedDate, tasks]);
 
-  const modifiers = useMemo(() => {
-    const dates = Array.from(taskDates.keys()).map(d => new Date(d + 'T00:00:00'));
-    return { hasTask: dates };
-  }, [taskDates]);
+  const modifiers = useMemo(() => ({
+    startEnd: startEndDates,
+    inRange: inRangeDates,
+  }), [startEndDates, inRangeDates]);
 
   const modifiersStyles = {
-    hasTask: {
+    startEnd: {
       fontWeight: 700,
       textDecoration: 'underline',
       textDecorationColor: 'hsl(349 80% 45%)',
       textUnderlineOffset: '3px',
+    },
+    inRange: {
+      backgroundColor: 'hsl(349 80% 45% / 0.12)',
+      borderRadius: '0',
     },
   };
 
@@ -717,13 +741,853 @@ const CalendarView = ({ tasks, selectedDate, onSelectDate }: { tasks: TaskRow[];
             <div className="flex items-center gap-3 text-muted-foreground text-[10px]">
               <span>{task.phase}</span>
               <span>{task.assigned_to ? task.assigned_to.split('@')[0] : '—'}</span>
-              <span>Due: {task.due_date ? new Date(task.due_date).toLocaleDateString() : '—'}</span>
+              <span>
+                {task.start_date ? format(new Date(task.start_date), 'MMM d') : '—'}
+                {' → '}
+                {task.due_date ? format(new Date(task.due_date), 'MMM d') : '—'}
+              </span>
               <span className="font-mono">{Math.round(Number(task.progress) * 100)}%</span>
             </div>
           </div>
         ))}
       </div>
     </div>
+  );
+};
+
+// ── Gantt Sub-task Row (used inside expanded task) ────────────
+
+const GanttStepRow = ({
+  step,
+  children: childSteps,
+  allParents,
+  timelineStart,
+  timelineDays,
+  todayOffset,
+  onToggle,
+  onToggleChild,
+  onDelete,
+  onAddChild,
+}: {
+  step: TaskStepRow;
+  children: TaskStepRow[];
+  allParents: TaskStepRow[];
+  timelineStart: Date;
+  timelineDays: Date[];
+  todayOffset: number;
+  onToggle: (s: TaskStepRow) => void;
+  onToggleChild: (child: TaskStepRow, siblings: TaskStepRow[], parent: TaskStepRow) => void;
+  onDelete: (s: TaskStepRow) => void;
+  onAddChild: (parentId: string) => void;
+}) => {
+  const completedChildren = childSteps.filter(c => c.complete).length;
+  const isComplete = childSteps.length > 0 ? completedChildren === childSteps.length : step.complete;
+
+  return (
+    <>
+      {/* Parent step row */}
+      <div className="flex">
+        {/* Left label */}
+        <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 h-7 flex items-center pl-7 pr-2 border-b border-border/30 gap-1.5 group/srow">
+          <button onClick={() => onToggle(step)} className="flex items-center gap-1.5 flex-1 min-w-0 text-left">
+            <div className={cn(
+              "h-3 w-3 rounded-sm border flex items-center justify-center shrink-0 transition-colors",
+              isComplete ? "bg-ops-green/15 border-ops-green/40" : "border-border",
+            )}>
+              {isComplete && <Check className="h-2 w-2 text-ops-green" />}
+            </div>
+            <span className={cn("text-[10px] truncate", isComplete ? "text-muted-foreground line-through" : "text-foreground")}>{step.step_name}</span>
+          </button>
+          {childSteps.length > 0 && (
+            <span className="text-[9px] font-mono text-muted-foreground">{completedChildren}/{childSteps.length}</span>
+          )}
+          <button onClick={() => onAddChild(step.id)} className="p-0.5 opacity-0 group-hover/srow:opacity-100 text-muted-foreground hover:text-foreground transition-all" title="Add item">
+            <Plus className="h-2.5 w-2.5" />
+          </button>
+          <button onClick={() => onDelete(step)} className="p-0.5 opacity-0 group-hover/srow:opacity-100 text-muted-foreground hover:text-accent transition-all" title="Remove">
+            <Trash2 className="h-2.5 w-2.5" />
+          </button>
+        </div>
+        {/* Right timeline (empty row) */}
+        <div className="flex-1 h-7 border-b border-border/30 relative">
+          {/* Progress bar spanning all parents equally */}
+          {allParents.length > 0 && (
+            <div className="absolute top-2 left-1 right-1 h-3 rounded-sm bg-muted/30 overflow-hidden">
+              <div className={cn("h-full rounded-sm transition-all", isComplete ? "bg-ops-green/40" : "bg-muted-foreground/15")}
+                style={{ width: isComplete ? '100%' : childSteps.length > 0 ? `${(completedChildren / childSteps.length) * 100}%` : '0%' }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Child step rows */}
+      {childSteps.map(child => (
+        <div key={child.id} className="flex">
+          <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 h-6 flex items-center pl-12 pr-2 border-b border-border/20 gap-1.5 group/crow">
+            <button onClick={() => onToggleChild(child, childSteps, step)} className="flex items-center gap-1.5 flex-1 min-w-0 text-left">
+              <div className={cn(
+                "h-2.5 w-2.5 rounded-sm border flex items-center justify-center shrink-0 transition-colors",
+                child.complete ? "bg-ops-green/15 border-ops-green/40" : "border-border",
+              )}>
+                {child.complete && <Check className="h-1.5 w-1.5 text-ops-green" />}
+              </div>
+              <span className={cn("text-[9px] truncate", child.complete ? "text-muted-foreground line-through" : "text-foreground/80")}>{child.step_name}</span>
+            </button>
+            <button onClick={() => onDelete(child)} className="p-0.5 opacity-0 group-hover/crow:opacity-100 text-muted-foreground hover:text-accent transition-all">
+              <Trash2 className="h-2 w-2" />
+            </button>
+          </div>
+          <div className="flex-1 h-6 border-b border-border/20" />
+        </div>
+      ))}
+    </>
+  );
+};
+
+// ── Status quick-action pills ─────────────────────────────────
+
+const STATUS_OPTIONS = [
+  { value: 'Not Started', label: 'NS', color: 'bg-muted-foreground/40', activeColor: 'bg-muted-foreground' },
+  { value: 'In Progress', label: 'IP', color: 'bg-foreground/30', activeColor: 'bg-foreground' },
+  { value: 'Blocked', label: 'BL', color: 'bg-accent/30', activeColor: 'bg-accent' },
+  { value: 'Complete', label: 'DN', color: 'bg-ops-green/30', activeColor: 'bg-ops-green' },
+] as const;
+
+// ── Gantt Expandable Task (left labels + bars + sub-tasks) ────
+
+const GanttTaskRow = ({
+  task,
+  timelineStart,
+  timelineDays,
+  todayOffset,
+  isSelected,
+  onSelect,
+  statusColor,
+  statusProgressColor,
+  onDragStart,
+  onDrawStart,
+  drawingRange,
+}: {
+  task: TaskRow;
+  timelineStart: Date;
+  timelineDays: Date[];
+  todayOffset: number;
+  isSelected: boolean;
+  onSelect: (task: TaskRow) => void;
+  statusColor: (s: string) => string;
+  statusProgressColor: (s: string) => string;
+  onDragStart: (task: TaskRow, edge: 'left' | 'right' | 'move', e: React.MouseEvent) => void;
+  onDrawStart: (task: TaskRow, colIndex: number, e: React.MouseEvent) => void;
+  drawingRange: { startCol: number; endCol: number } | null;
+}) => {
+  const [expanded, setExpanded] = useState(false);
+  const { data: steps = [] } = useTaskSteps(expanded ? task.id : undefined);
+  const updateStep = useUpdateTaskStep();
+  const updateSteps = useUpdateTaskSteps();
+  const updateTask = useUpdateTask();
+  const createStep = useCreateTaskStep();
+  const deleteStep = useDeleteTaskStep();
+
+  const [addingStepName, setAddingStepName] = useState('');
+  const [showAddStep, setShowAddStep] = useState(false);
+  const [addingChildForId, setAddingChildForId] = useState<string | null>(null);
+  const [childName, setChildName] = useState('');
+
+  const parentSteps = useMemo(() => steps.filter(s => !s.parent_step_id).sort((a, b) => a.sort_order - b.sort_order), [steps]);
+  const childrenMap = useMemo(() => {
+    const map = new Map<string, TaskStepRow[]>();
+    steps.filter(s => s.parent_step_id).forEach(s => {
+      const list = map.get(s.parent_step_id!) ?? [];
+      list.push(s);
+      map.set(s.parent_step_id!, list);
+    });
+    map.forEach(list => list.sort((a, b) => a.sort_order - b.sort_order));
+    return map;
+  }, [steps]);
+
+  const rebalanceWeights = async (parents: { id: string; complete: boolean }[]) => {
+    if (parents.length === 0) return;
+    const newWeight = +(1 / parents.length).toFixed(6);
+    await updateSteps.mutateAsync(parents.map(s => ({ id: s.id, weight: newWeight })));
+    const newProgress = parents.reduce((sum, s) => sum + (s.complete ? newWeight : 0), 0);
+    await updateTask.mutateAsync({ id: task.id, progress: newProgress });
+  };
+
+  const handleToggleStep = async (step: TaskStepRow) => {
+    const children = childrenMap.get(step.id) ?? [];
+    if (children.length > 0) return;
+    const newComplete = !step.complete;
+    try {
+      await updateStep.mutateAsync({ id: step.id, complete: newComplete });
+      const weight = parentSteps.length > 0 ? +(1 / parentSteps.length).toFixed(6) : 0;
+      const newProgress = parentSteps.reduce((sum, p) => {
+        const isC = p.id === step.id ? newComplete : (childrenMap.get(p.id) ?? []).length > 0 ? (childrenMap.get(p.id) ?? []).every(c => c.complete) : p.complete;
+        return sum + (isC ? weight : 0);
+      }, 0);
+      await updateTask.mutateAsync({ id: task.id, progress: newProgress });
+    } catch { toast.error('Failed to update'); }
+  };
+
+  const handleToggleChild = async (child: TaskStepRow, siblings: TaskStepRow[], parent: TaskStepRow) => {
+    const newComplete = !child.complete;
+    try {
+      await updateStep.mutateAsync({ id: child.id, complete: newComplete });
+      const allChildrenComplete = siblings.every(c => c.id === child.id ? newComplete : c.complete);
+      if (allChildrenComplete !== parent.complete) {
+        await updateStep.mutateAsync({ id: parent.id, complete: allChildrenComplete });
+      }
+      const weight = parentSteps.length > 0 ? +(1 / parentSteps.length).toFixed(6) : 0;
+      const newProgress = parentSteps.reduce((sum, p) => {
+        let isC: boolean;
+        if (p.id === parent.id) isC = allChildrenComplete;
+        else { const pc = childrenMap.get(p.id) ?? []; isC = pc.length > 0 ? pc.every(c => c.complete) : p.complete; }
+        return sum + (isC ? weight : 0);
+      }, 0);
+      await updateTask.mutateAsync({ id: task.id, progress: newProgress });
+    } catch { toast.error('Failed to update'); }
+  };
+
+  const handleDeleteStep = async (stepToDelete: TaskStepRow) => {
+    try {
+      await deleteStep.mutateAsync({ id: stepToDelete.id, task_id: task.id });
+      if (!stepToDelete.parent_step_id) {
+        const remaining = parentSteps.filter(s => s.id !== stepToDelete.id);
+        if (remaining.length > 0) await rebalanceWeights(remaining);
+        else await updateTask.mutateAsync({ id: task.id, progress: 0 });
+      }
+    } catch { toast.error('Failed to remove'); }
+  };
+
+  const handleAddStep = async () => {
+    if (!addingStepName.trim()) return;
+    try {
+      const created = await createStep.mutateAsync({ task_id: task.id, step_name: addingStepName.trim(), weight: 0, sort_order: parentSteps.length, parent_step_id: null });
+      await rebalanceWeights([...parentSteps, created]);
+      setAddingStepName('');
+      setShowAddStep(false);
+    } catch { toast.error('Failed to add'); }
+  };
+
+  const handleAddChild = async (parentId: string) => {
+    if (!childName.trim()) return;
+    try {
+      const siblings = childrenMap.get(parentId) ?? [];
+      await createStep.mutateAsync({ task_id: task.id, step_name: childName.trim(), weight: 0, sort_order: siblings.length, parent_step_id: parentId });
+      setChildName('');
+      setAddingChildForId(null);
+    } catch { toast.error('Failed to add'); }
+  };
+
+  // Quick status change
+  const handleQuickStatus = async (status: string) => {
+    if (status === task.status) return;
+    try {
+      await updateTask.mutateAsync({ id: task.id, status });
+      toast.success(`${task.task_name} → ${status}`);
+    } catch { toast.error('Failed to update status'); }
+  };
+
+  // Bar calculations
+  const taskStart = task.start_date ? startOfDay(new Date(task.start_date)) : null;
+  const taskEnd = task.due_date ? startOfDay(new Date(task.due_date)) : null;
+  let barLeft = 0, barWidth = 0, showBar = false;
+  if (taskStart && taskEnd) {
+    barLeft = differenceInDays(taskStart, timelineStart) * DAY_WIDTH;
+    barWidth = (differenceInDays(taskEnd, taskStart) + 1) * DAY_WIDTH;
+    showBar = true;
+  } else if (taskStart) {
+    barLeft = differenceInDays(taskStart, timelineStart) * DAY_WIDTH;
+    barWidth = DAY_WIDTH;
+    showBar = true;
+  } else if (taskEnd) {
+    barLeft = differenceInDays(taskEnd, timelineStart) * DAY_WIDTH;
+    barWidth = DAY_WIDTH;
+    showBar = true;
+  }
+  const progress = Number(task.progress);
+
+  // Drawing preview
+  const drawLeft = drawingRange ? Math.min(drawingRange.startCol, drawingRange.endCol) * DAY_WIDTH : 0;
+  const drawWidth = drawingRange ? (Math.abs(drawingRange.endCol - drawingRange.startCol) + 1) * DAY_WIDTH : 0;
+
+  // Calculate col from mouse position on timeline
+  const getColFromEvent = (e: React.MouseEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    return Math.max(0, Math.min(timelineDays.length - 1, Math.floor(x / DAY_WIDTH)));
+  };
+
+  return (
+    <>
+      {/* Main task row */}
+      <div className="flex group/taskrow">
+        {/* Left label */}
+        <div
+          className={cn("shrink-0 w-[220px] border-r border-border bg-card z-10 h-9 flex items-center px-2 border-b border-border/50 gap-1 transition-colors",
+            isSelected ? "bg-accent/10" : "hover:bg-muted/30"
+          )}
+        >
+          <button onClick={() => setExpanded(!expanded)} className="p-0.5 text-muted-foreground/60 hover:text-muted-foreground shrink-0">
+            <ChevronDown className={cn("h-3 w-3 transition-transform", !expanded && "-rotate-90")} />
+          </button>
+
+          {/* Status quick-action pills (visible on hover) */}
+          <div className="hidden group-hover/taskrow:flex items-center gap-0.5 shrink-0">
+            {STATUS_OPTIONS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => handleQuickStatus(opt.value)}
+                title={opt.value}
+                className={cn(
+                  "h-4 w-5 rounded text-[7px] font-bold flex items-center justify-center transition-all",
+                  task.status === opt.value
+                    ? cn(opt.activeColor, "text-background")
+                    : cn(opt.color, "text-foreground/60 hover:opacity-100 opacity-60"),
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {/* Status dot (hidden on hover, shown normally) */}
+          <div className={cn("h-1.5 w-1.5 rounded-full shrink-0 group-hover/taskrow:hidden", statusColor(task.status))} />
+
+          <button onClick={() => onSelect(task)} className="min-w-0 flex-1 text-left">
+            <p className="text-[11px] font-medium text-foreground truncate leading-tight">{task.task_name}</p>
+            <p className="text-[9px] text-muted-foreground truncate leading-tight">
+              {task.assigned_to ? task.assigned_to.split('@')[0] : '—'}
+            </p>
+          </button>
+        </div>
+
+        {/* Right timeline bar */}
+        <div
+          className={cn("flex-1 h-9 relative border-b border-border/50", isSelected && "bg-accent/5", !showBar && "cursor-crosshair")}
+          onMouseDown={!showBar ? (e) => {
+            const col = getColFromEvent(e);
+            onDrawStart(task, col, e);
+          } : undefined}
+        >
+          {/* Weekend shading */}
+          {timelineDays.map((day, i) => {
+            if (day.getDay() !== 0 && day.getDay() !== 6) return null;
+            return <div key={i} className="absolute top-0 bottom-0 bg-muted/20" style={{ left: i * DAY_WIDTH, width: DAY_WIDTH }} />;
+          })}
+
+          {/* Drawing preview highlight */}
+          {drawingRange && !showBar && (
+            <div
+              className="absolute top-1.5 h-6 rounded-sm bg-accent/20 border border-accent/40 pointer-events-none z-20"
+              style={{ left: drawLeft, width: drawWidth }}
+            >
+              <span className="absolute inset-0 flex items-center justify-center text-[8px] font-mono text-accent">
+                {Math.abs(drawingRange.endCol - drawingRange.startCol) + 1}d
+              </span>
+            </div>
+          )}
+
+          {showBar ? (
+            <div
+              className="absolute top-2 h-5 flex items-center group/bar cursor-grab active:cursor-grabbing"
+              style={{ left: barLeft, width: barWidth }}
+              onMouseDown={e => {
+                // Middle of bar → move. Don't start if clicking edge handles.
+                if (taskStart && taskEnd) {
+                  e.preventDefault();
+                  onDragStart(task, 'move', e);
+                }
+              }}
+            >
+              <div className={cn("absolute inset-0 rounded-sm opacity-25", statusColor(task.status))} />
+              <div className={cn("absolute top-0 bottom-0 left-0 rounded-sm", statusProgressColor(task.status))} style={{ width: `${Math.min(progress * 100, 100)}%` }} />
+              {barWidth > 60 && (
+                <span className="relative z-10 px-2 text-[9px] font-medium text-background truncate pointer-events-none">{task.task_name}</span>
+              )}
+              {/* Left resize handle */}
+              {taskStart && taskEnd && (
+                <>
+                  <div
+                    className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize opacity-0 group-hover/bar:opacity-100 bg-foreground/20 rounded-l-sm z-20"
+                    onMouseDown={e => { e.stopPropagation(); e.preventDefault(); onDragStart(task, 'left', e); }}
+                  />
+                  <div
+                    className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize opacity-0 group-hover/bar:opacity-100 bg-foreground/20 rounded-r-sm z-20"
+                    onMouseDown={e => { e.stopPropagation(); e.preventDefault(); onDragStart(task, 'right', e); }}
+                  />
+                </>
+              )}
+            </div>
+          ) : !drawingRange && (
+            /* No dates hint: show "drag to assign" text on hover */
+            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/taskrow:opacity-100 transition-opacity pointer-events-none">
+              <span className="text-[9px] text-muted-foreground/60 italic">Click & drag to set dates</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Expanded sub-tasks */}
+      {expanded && (
+        <>
+          {parentSteps.map(step => (
+            <GanttStepRow
+              key={step.id}
+              step={step}
+              children={childrenMap.get(step.id) ?? []}
+              allParents={parentSteps}
+              timelineStart={timelineStart}
+              timelineDays={timelineDays}
+              todayOffset={todayOffset}
+              onToggle={handleToggleStep}
+              onToggleChild={handleToggleChild}
+              onDelete={handleDeleteStep}
+              onAddChild={(parentId) => { setAddingChildForId(parentId); setChildName(''); }}
+            />
+          ))}
+
+          {/* Add child inline input */}
+          {addingChildForId && (
+            <div className="flex">
+              <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 h-7 flex items-center pl-12 pr-2 border-b border-border/20 gap-1">
+                <input
+                  type="text" value={childName} onChange={e => setChildName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleAddChild(addingChildForId); if (e.key === 'Escape') setAddingChildForId(null); }}
+                  placeholder="Item name..." autoFocus
+                  className="flex-1 rounded border border-input bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <button onClick={() => handleAddChild(addingChildForId)} disabled={!childName.trim()} className="text-[9px] font-medium text-accent hover:underline disabled:opacity-50">Add</button>
+                <button onClick={() => setAddingChildForId(null)} className="text-muted-foreground hover:text-foreground"><X className="h-2.5 w-2.5" /></button>
+              </div>
+              <div className="flex-1 h-7 border-b border-border/20" />
+            </div>
+          )}
+
+          {/* Add top-level step */}
+          <div className="flex">
+            <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 h-7 flex items-center pl-7 pr-2 border-b border-border/30">
+              {showAddStep ? (
+                <div className="flex items-center gap-1 flex-1">
+                  <input
+                    type="text" value={addingStepName} onChange={e => setAddingStepName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleAddStep(); if (e.key === 'Escape') setShowAddStep(false); }}
+                    placeholder="Sub-task..." autoFocus
+                    className="flex-1 rounded border border-input bg-background px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring min-w-0"
+                  />
+                  <button onClick={handleAddStep} disabled={!addingStepName.trim()} className="text-[9px] font-medium text-accent hover:underline disabled:opacity-50">Add</button>
+                  <button onClick={() => { setShowAddStep(false); setAddingStepName(''); }} className="text-muted-foreground hover:text-foreground"><X className="h-2.5 w-2.5" /></button>
+                </div>
+              ) : (
+                <button onClick={() => setShowAddStep(true)} className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors">
+                  <Plus className="h-2.5 w-2.5" /> Add sub-task
+                </button>
+              )}
+            </div>
+            <div className="flex-1 h-7 border-b border-border/30" />
+          </div>
+        </>
+      )}
+    </>
+  );
+};
+
+// ── Gantt Edit Panel (right sidebar) ─────────────────────────
+
+const GanttEditPanel = ({ task, onClose }: { task: TaskRow; onClose: () => void }) => {
+  const updateTask = useUpdateTask();
+  const [form, setForm] = useState({
+    task_name: task.task_name,
+    phase: task.phase ?? 'MP',
+    priority: task.priority,
+    status: task.status,
+    assigned_to: task.assigned_to ?? '',
+    start_date: task.start_date ?? '',
+    due_date: task.due_date ?? '',
+    blocked_reason: task.blocked_reason ?? '',
+    notes: task.notes ?? '',
+  });
+
+  // Reset form when task changes
+  useMemo(() => {
+    setForm({
+      task_name: task.task_name,
+      phase: task.phase ?? 'MP',
+      priority: task.priority,
+      status: task.status,
+      assigned_to: task.assigned_to ?? '',
+      start_date: task.start_date ?? '',
+      due_date: task.due_date ?? '',
+      blocked_reason: task.blocked_reason ?? '',
+      notes: task.notes ?? '',
+    });
+  }, [task.id]);
+
+  const handleSave = async () => {
+    if (!form.task_name.trim()) return;
+    try {
+      await updateTask.mutateAsync({
+        id: task.id,
+        task_name: form.task_name.trim(),
+        phase: form.phase,
+        priority: form.priority,
+        status: form.status,
+        assigned_to: form.assigned_to.trim() || null,
+        start_date: form.start_date || null,
+        due_date: form.due_date || null,
+        blocked_reason: form.status === 'Blocked' ? (form.blocked_reason.trim() || null) : null,
+        notes: form.notes.trim() || null,
+      });
+      toast.success('Task updated');
+    } catch { toast.error('Failed to update task'); }
+  };
+
+  return (
+    <div className="w-[300px] shrink-0 border-l border-border bg-card overflow-y-auto">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Edit Task</span>
+        <button onClick={onClose} className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="p-3 space-y-3">
+        <div>
+          <Label className="text-[10px]">Task Name</Label>
+          <Input value={form.task_name} onChange={e => setForm(p => ({ ...p, task_name: e.target.value }))} className="h-8 text-xs" />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <Label className="text-[10px]">Phase</Label>
+            <Select value={form.phase} onValueChange={v => setForm(p => ({ ...p, phase: v }))}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>{phaseOrder.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-[10px]">Priority</Label>
+            <Select value={form.priority} onValueChange={v => setForm(p => ({ ...p, priority: v }))}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>{['Low', 'Medium', 'High', 'Critical'].map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+        </div>
+        <div>
+          <Label className="text-[10px]">Status</Label>
+          <Select value={form.status} onValueChange={v => setForm(p => ({ ...p, status: v }))}>
+            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>{['Not Started', 'In Progress', 'Blocked', 'Complete'].map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        {form.status === 'Blocked' && (
+          <div>
+            <Label className="text-[10px]">Blocked Reason</Label>
+            <Input value={form.blocked_reason} onChange={e => setForm(p => ({ ...p, blocked_reason: e.target.value }))} className="h-8 text-xs" placeholder="Why blocked?" />
+          </div>
+        )}
+        <div>
+          <Label className="text-[10px]">Assigned To</Label>
+          <Input value={form.assigned_to} onChange={e => setForm(p => ({ ...p, assigned_to: e.target.value }))} className="h-8 text-xs" placeholder="email" />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <Label className="text-[10px]">Start</Label>
+            <Input type="date" value={form.start_date} onChange={e => setForm(p => ({ ...p, start_date: e.target.value }))} className="h-8 text-xs" />
+          </div>
+          <div>
+            <Label className="text-[10px]">Due</Label>
+            <Input type="date" value={form.due_date} onChange={e => setForm(p => ({ ...p, due_date: e.target.value }))} className="h-8 text-xs" />
+          </div>
+        </div>
+        <div>
+          <Label className="text-[10px]">Notes</Label>
+          <Textarea value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} rows={2} className="text-xs" placeholder="Notes..." />
+        </div>
+        <Button onClick={handleSave} disabled={updateTask.isPending || !form.task_name.trim()} className="w-full h-8 text-xs">
+          {updateTask.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+          Save
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+// ── Gantt Chart View ──────────────────────────────────────────
+
+const DAY_WIDTH = 36;
+
+const GanttView = ({ tasks }: { tasks: TaskRow[] }) => {
+  const today = startOfDay(new Date());
+  const updateTask = useUpdateTask();
+
+  const { timelineStart, timelineDays } = useMemo(() => {
+    const datesWithValues = tasks.flatMap(t => {
+      const dates: Date[] = [];
+      if (t.start_date) dates.push(startOfDay(new Date(t.start_date)));
+      if (t.due_date) dates.push(startOfDay(new Date(t.due_date)));
+      return dates;
+    });
+
+    if (datesWithValues.length === 0) {
+      const start = addDays(today, -7);
+      const end = addDays(today, 21);
+      return { timelineStart: start, timelineDays: eachDayOfInterval({ start, end }) };
+    }
+
+    const minDate = datesWithValues.reduce((a, b) => (a < b ? a : b));
+    const maxDate = datesWithValues.reduce((a, b) => (a > b ? a : b));
+    const start = addDays(minDate, -3);
+    const end = addDays(maxDate, 7);
+    return { timelineStart: start, timelineDays: eachDayOfInterval({ start, end }) };
+  }, [tasks, today]);
+
+  const monthGroups = useMemo(() => {
+    const groups: { label: string; span: number }[] = [];
+    let current = '';
+    let count = 0;
+    timelineDays.forEach(day => {
+      const label = format(day, 'MMM yyyy');
+      if (label === current) { count++; } else { if (current) groups.push({ label: current, span: count }); current = label; count = 1; }
+    });
+    if (current) groups.push({ label: current, span: count });
+    return groups;
+  }, [timelineDays]);
+
+  const todayOffset = differenceInDays(today, timelineStart);
+
+  const phaseGroups = useMemo(() => {
+    const groups: { phase: string; label: string; tasks: TaskRow[] }[] = [];
+    phaseOrder.forEach(phase => {
+      const phaseTasks = tasks.filter(t => t.phase === phase);
+      if (phaseTasks.length > 0) groups.push({ phase, label: phaseLabels[phase] ?? phase, tasks: phaseTasks });
+    });
+    const unphased = tasks.filter(t => !t.phase || !phaseOrder.includes(t.phase as typeof phaseOrder[number]));
+    if (unphased.length > 0) groups.push({ phase: 'Other', label: 'Unassigned Phase', tasks: unphased });
+    return groups;
+  }, [tasks]);
+
+  const statusColor = (status: string) => {
+    switch (status) { case 'Complete': return 'bg-ops-green'; case 'In Progress': return 'bg-foreground'; case 'Blocked': return 'bg-accent'; default: return 'bg-muted-foreground/40'; }
+  };
+  const statusProgressColor = (status: string) => {
+    switch (status) { case 'Complete': return 'bg-ops-green'; case 'In Progress': return 'bg-foreground/70'; case 'Blocked': return 'bg-accent/70'; default: return 'bg-muted-foreground/30'; }
+  };
+
+  const [selectedTask, setSelectedTask] = useState<TaskRow | null>(null);
+
+  // ── Drag (resize/move existing bar) ─────────────────────
+  const [dragging, setDragging] = useState<{
+    task: TaskRow; edge: 'left' | 'right' | 'move'; startX: number;
+    origStart: string; origEnd: string; moved: boolean;
+    _newStart?: string; _newEnd?: string;
+  } | null>(null);
+
+  const handleDragStart = useCallback((task: TaskRow, edge: 'left' | 'right' | 'move', e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!task.start_date || !task.due_date) return;
+    setDragging({ task, edge, startX: e.clientX, origStart: task.start_date, origEnd: task.due_date, moved: false });
+  }, []);
+
+  // ── Draw (paint new bar for tasks without dates) ────────
+  const [drawing, setDrawing] = useState<{
+    task: TaskRow; startCol: number; endCol: number;
+  } | null>(null);
+
+  const handleDrawStart = useCallback((task: TaskRow, colIndex: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    setDrawing({ task, startCol: colIndex, endCol: colIndex });
+  }, []);
+
+  // ── Unified mouse handlers ──────────────────────────────
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    // Handle bar drag
+    if (dragging) {
+      const dx = e.clientX - dragging.startX;
+      const daysDelta = Math.round(dx / DAY_WIDTH);
+
+      const origStart = startOfDay(new Date(dragging.origStart));
+      const origEnd = startOfDay(new Date(dragging.origEnd));
+      let newStart = origStart;
+      let newEnd = origEnd;
+
+      if (dragging.edge === 'left') {
+        newStart = addDays(origStart, daysDelta);
+        if (newStart > newEnd) newStart = newEnd;
+      } else if (dragging.edge === 'right') {
+        newEnd = addDays(origEnd, daysDelta);
+        if (newEnd < newStart) newEnd = newStart;
+      } else {
+        newStart = addDays(origStart, daysDelta);
+        newEnd = addDays(origEnd, daysDelta);
+      }
+
+      const hasMoved = daysDelta !== 0;
+      setDragging(prev => prev ? {
+        ...prev,
+        moved: prev.moved || hasMoved,
+        _newStart: format(newStart, 'yyyy-MM-dd'),
+        _newEnd: format(newEnd, 'yyyy-MM-dd'),
+      } : null);
+      return;
+    }
+
+    // Handle drawing
+    if (drawing) {
+      // Find the timeline body area and calculate column
+      const timelineEl = document.querySelector('[data-timeline-body]');
+      if (!timelineEl) return;
+      const rect = timelineEl.getBoundingClientRect();
+      // Offset by the 220px left label column
+      const x = e.clientX - rect.left - 220;
+      const col = Math.max(0, Math.min(timelineDays.length - 1, Math.floor(x / DAY_WIDTH)));
+      setDrawing(prev => prev ? { ...prev, endCol: col } : null);
+    }
+  }, [dragging, drawing, timelineDays.length]);
+
+  const handleMouseUp = useCallback(async () => {
+    // Handle bar drag end
+    if (dragging) {
+      const newStartStr = dragging._newStart ?? dragging.origStart;
+      const newEndStr = dragging._newEnd ?? dragging.origEnd;
+
+      if (!dragging.moved) {
+        // No movement → treat as click → select task
+        setSelectedTask(dragging.task);
+      } else if (newStartStr !== dragging.origStart || newEndStr !== dragging.origEnd) {
+        try {
+          await updateTask.mutateAsync({ id: dragging.task.id, start_date: newStartStr, due_date: newEndStr });
+          toast.success(`${dragging.task.task_name}: ${format(new Date(newStartStr), 'MMM d')} → ${format(new Date(newEndStr), 'MMM d')}`);
+        } catch { toast.error('Failed to update dates'); }
+      }
+      setDragging(null);
+      return;
+    }
+
+    // Handle drawing end
+    if (drawing) {
+      const startCol = Math.min(drawing.startCol, drawing.endCol);
+      const endCol = Math.max(drawing.startCol, drawing.endCol);
+      const startDate = timelineDays[startCol];
+      const endDate = timelineDays[endCol];
+
+      if (startDate && endDate) {
+        const startStr = format(startDate, 'yyyy-MM-dd');
+        const endStr = format(endDate, 'yyyy-MM-dd');
+        try {
+          await updateTask.mutateAsync({ id: drawing.task.id, start_date: startStr, due_date: endStr });
+          toast.success(`${drawing.task.task_name}: ${format(startDate, 'MMM d')} → ${format(endDate, 'MMM d')}`);
+        } catch { toast.error('Failed to set dates'); }
+      }
+      setDrawing(null);
+    }
+  }, [dragging, drawing, updateTask, timelineDays]);
+
+  const isInteracting = !!dragging || !!drawing;
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="kpi-card p-0 overflow-hidden">
+      <div className="flex" onMouseMove={isInteracting ? handleMouseMove : undefined} onMouseUp={isInteracting ? handleMouseUp : undefined} onMouseLeave={isInteracting ? handleMouseUp : undefined}>
+        {/* Left labels + Right timeline (combined rows) */}
+        <div className="flex-1 flex flex-col min-w-0">
+          <div className="flex">
+            {/* Left header */}
+            <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 h-[52px] border-b border-border px-3 flex items-end pb-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Task</span>
+            </div>
+            {/* Right header */}
+            <div className="flex-1 overflow-x-auto" id="gantt-timeline-header">
+              <div style={{ width: timelineDays.length * DAY_WIDTH, minWidth: '100%' }}>
+                <div className="flex h-6 border-b border-border">
+                  {monthGroups.map((m, i) => (
+                    <div key={i} style={{ width: m.span * DAY_WIDTH }} className="flex items-center justify-center text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-r border-border/30 last:border-r-0">
+                      {m.label}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex h-[26px] border-b border-border">
+                  {timelineDays.map((day, i) => {
+                    const isToday = isSameDay(day, today);
+                    const isWeekend = day.getDay() === 0 || day.getDay() === 6;
+                    return (
+                      <div key={i} style={{ width: DAY_WIDTH }} className={cn(
+                        "flex flex-col items-center justify-center text-[9px] border-r border-border/20 shrink-0",
+                        isToday && "bg-accent/10 font-bold text-accent",
+                        isWeekend && !isToday && "text-muted-foreground/40",
+                        !isToday && !isWeekend && "text-muted-foreground",
+                      )}>
+                        <span>{format(day, 'd')}</span>
+                        <span className="text-[8px] leading-none">{format(day, 'EEE').slice(0, 2)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Task rows area */}
+          <div className="flex-1 overflow-y-auto" data-timeline-body>
+            {/* Today line */}
+            <div className="relative pointer-events-none" style={{ height: 0 }}>
+              <div className="absolute" style={{ left: 220 }}>
+                {todayOffset >= 0 && todayOffset < timelineDays.length && (
+                  <div className="absolute w-px border-l border-dashed border-accent/50 z-10" style={{ left: todayOffset * DAY_WIDTH + DAY_WIDTH / 2, top: 0, height: 9999 }} />
+                )}
+              </div>
+            </div>
+
+            {phaseGroups.map(group => (
+              <div key={group.phase}>
+                {/* Phase header */}
+                <div className="flex">
+                  <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 h-7 flex items-center px-3 bg-muted/30 border-b border-border">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{group.label}</span>
+                  </div>
+                  <div className="flex-1 h-7 bg-muted/30 border-b border-border" />
+                </div>
+
+                {group.tasks.map(task => (
+                  <GanttTaskRow
+                    key={task.id}
+                    task={task}
+                    timelineStart={timelineStart}
+                    timelineDays={timelineDays}
+                    todayOffset={todayOffset}
+                    isSelected={selectedTask?.id === task.id}
+                    onSelect={setSelectedTask}
+                    statusColor={statusColor}
+                    statusProgressColor={statusProgressColor}
+                    onDragStart={handleDragStart}
+                    onDrawStart={handleDrawStart}
+                    drawingRange={drawing && drawing.task.id === task.id ? { startCol: drawing.startCol, endCol: drawing.endCol } : null}
+                  />
+                ))}
+              </div>
+            ))}
+
+            {tasks.length === 0 && (
+              <div className="flex">
+                <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 px-3 py-6 text-xs text-muted-foreground text-center">No tasks</div>
+                <div className="flex-1" />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Edit Panel */}
+        <AnimatePresence>
+          {selectedTask && (
+            <motion.div
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 300, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="overflow-hidden"
+            >
+              <GanttEditPanel task={selectedTask} onClose={() => setSelectedTask(null)} />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </motion.div>
   );
 };
 
@@ -881,11 +1745,25 @@ const Tasks = () => {
               <CalendarDays className="h-3 w-3" />
               Calendar
             </button>
+            <button
+              onClick={() => setViewMode('gantt')}
+              className={cn(
+                "flex items-center gap-1.5 rounded px-2.5 py-1.5 text-[11px] font-medium transition-colors",
+                viewMode === 'gantt'
+                  ? "bg-foreground text-background"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <BarChart3 className="h-3 w-3" />
+              Gantt
+            </button>
           </div>
         </div>
       </div>
 
-      {viewMode === 'calendar' ? (
+      {viewMode === 'gantt' ? (
+        <GanttView tasks={tasks} />
+      ) : viewMode === 'calendar' ? (
         <CalendarView tasks={tasks} selectedDate={selectedDate} onSelectDate={setSelectedDate} />
       ) : (
         <div className="space-y-5">
