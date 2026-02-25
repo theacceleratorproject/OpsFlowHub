@@ -206,6 +206,20 @@ export const useUpdateTask = () => {
   });
 };
 
+export const useDeleteTask = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, version_id }: { id: string; version_id: string }) => {
+      const { error } = await supabase.from('tasks').delete().eq('id', id);
+      if (error) throw error;
+      return { id, version_id };
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['tasks', data.version_id] });
+    },
+  });
+};
+
 // ── Task Steps ────────────────────────────────────────────────────
 
 export const useTaskSteps = (taskId?: string) =>

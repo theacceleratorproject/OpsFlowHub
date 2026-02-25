@@ -1,9 +1,9 @@
 import { useProject } from '@/contexts/ProjectContext';
-import { useTasks, useTaskSteps, useCreateTask, useCreateTaskSteps, useCreateTaskStep, useDeleteTaskStep, useUpdateTask, useUpdateTaskStep, useUpdateTaskSteps, type TaskRow, type TaskStepRow } from '@/hooks/use-supabase-data';
+import { useTasks, useTaskSteps, useCreateTask, useCreateTaskSteps, useCreateTaskStep, useDeleteTaskStep, useDeleteTask, useUpdateTask, useUpdateTaskStep, useUpdateTaskSteps, useReorderTaskSteps, type TaskRow, type TaskStepRow } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ClipboardList, AlertCircle, ChevronDown, Check, CalendarDays, Plus, Loader2, Pencil, Trash2, X, BarChart3 } from 'lucide-react';
-import { useState, useMemo, useCallback } from 'react';
+import { ClipboardList, AlertCircle, ChevronDown, Check, CalendarDays, Plus, Loader2, Pencil, Trash2, X, BarChart3, GripVertical } from 'lucide-react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Calendar } from '@/components/ui/calendar';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -34,6 +34,46 @@ const DEFAULT_STEPS = [
   'IPQA #2', 'Fill Coolant', 'Function Test', 'FQA', 'Packing', 'Ready to Ship', 'Shipped',
 ];
 
+const DragGrip = ({ onReorder }: { onReorder: (direction: 'up' | 'down') => void }) => {
+  const startYRef = useRef(0);
+  const firedRef = useRef(false);
+
+  useEffect(() => {
+    // cleanup only — handlers attached on mouseDown
+  }, []);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    startYRef.current = e.clientY;
+    firedRef.current = false;
+
+    const handleMove = (ev: MouseEvent) => {
+      if (firedRef.current) return;
+      const dy = ev.clientY - startYRef.current;
+      if (Math.abs(dy) > 20) {
+        firedRef.current = true;
+        onReorder(dy < 0 ? 'up' : 'down');
+      }
+    };
+    const handleUp = () => {
+      document.removeEventListener('mousemove', handleMove);
+      document.removeEventListener('mouseup', handleUp);
+    };
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('mouseup', handleUp);
+  };
+
+  return (
+    <div
+      onMouseDown={handleMouseDown}
+      className="p-0.5 cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground transition-colors shrink-0"
+      title="Drag to reorder"
+    >
+      <GripVertical className="h-3 w-3" />
+    </div>
+  );
+};
+
 const ParentStep = ({
   step,
   children,
@@ -42,6 +82,8 @@ const ParentStep = ({
   onToggleChild,
   onDelete,
   onAddChild,
+  onReorder,
+  onReorderChild,
   addingChildId,
   setAddingChildId,
   newChildName,
@@ -55,6 +97,8 @@ const ParentStep = ({
   onToggleChild: (child: TaskStepRow, siblings: TaskStepRow[], parent: TaskStepRow) => void;
   onDelete: (step: TaskStepRow) => void;
   onAddChild: (parentId: string) => void;
+  onReorder: (step: TaskStepRow, direction: 'up' | 'down') => void;
+  onReorderChild: (child: TaskStepRow, siblings: TaskStepRow[], direction: 'up' | 'down') => void;
   addingChildId: string | null;
   setAddingChildId: (id: string | null) => void;
   newChildName: string;
@@ -70,6 +114,7 @@ const ParentStep = ({
     <div className="space-y-0.5">
       {/* Parent row */}
       <div className="flex items-center gap-1.5 text-[11px] py-0.5 rounded hover:bg-muted/30 transition-colors group/step">
+        <DragGrip onReorder={(dir) => onReorder(step, dir)} />
         <button
           onClick={() => setExpanded(!expanded)}
           className="p-0.5 text-muted-foreground/60 hover:text-muted-foreground transition-colors"
@@ -128,6 +173,7 @@ const ParentStep = ({
                   key={child.id}
                   className="flex items-center gap-2 text-[11px] py-0.5 rounded hover:bg-muted/30 transition-colors group/child"
                 >
+                  <DragGrip onReorder={(dir) => onReorderChild(child, children, dir)} />
                   <button
                     onClick={() => onToggleChild(child, children, step)}
                     className="flex items-center gap-2 flex-1 text-left"
@@ -219,6 +265,7 @@ const TaskCard = ({
   const updateTask = useUpdateTask();
   const createStep = useCreateTaskStep();
   const deleteStep = useDeleteTaskStep();
+  const reorderSteps = useReorderTaskSteps();
 
   const [showEdit, setShowEdit] = useState(false);
   const [newStepName, setNewStepName] = useState('');
@@ -419,6 +466,34 @@ const TaskCard = ({
     }
   };
 
+  // Reorder parent steps
+  const handleReorderParent = async (step: TaskStepRow, direction: 'up' | 'down') => {
+    const idx = parentSteps.findIndex(s => s.id === step.id);
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= parentSteps.length) return;
+    const target = parentSteps[targetIdx];
+    try {
+      await reorderSteps.mutateAsync([
+        { id: step.id, sort_order: target.sort_order, task_id: task.id },
+        { id: target.id, sort_order: step.sort_order, task_id: task.id },
+      ]);
+    } catch { toast.error('Failed to reorder'); }
+  };
+
+  // Reorder child steps within a parent
+  const handleReorderChild = async (child: TaskStepRow, siblings: TaskStepRow[], direction: 'up' | 'down') => {
+    const idx = siblings.findIndex(s => s.id === child.id);
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= siblings.length) return;
+    const target = siblings[targetIdx];
+    try {
+      await reorderSteps.mutateAsync([
+        { id: child.id, sort_order: target.sort_order, task_id: task.id },
+        { id: target.id, sort_order: child.sort_order, task_id: task.id },
+      ]);
+    } catch { toast.error('Failed to reorder'); }
+  };
+
   return (
     <div className="kpi-card">
       <div className="flex items-center justify-between mb-2">
@@ -495,6 +570,8 @@ const TaskCard = ({
                       onToggleChild={handleToggleChild}
                       onDelete={handleDeleteStep}
                       onAddChild={handleAddChild}
+                      onReorder={handleReorderParent}
+                      onReorderChild={handleReorderChild}
                       addingChildId={addingChildId}
                       setAddingChildId={setAddingChildId}
                       newChildName={newChildName}
@@ -768,6 +845,10 @@ const GanttStepRow = ({
   onToggleChild,
   onDelete,
   onAddChild,
+  onReorder,
+  onReorderChild,
+  onUpdateStepDates,
+  onDoubleClickStep,
 }: {
   step: TaskStepRow;
   children: TaskStepRow[];
@@ -779,24 +860,137 @@ const GanttStepRow = ({
   onToggleChild: (child: TaskStepRow, siblings: TaskStepRow[], parent: TaskStepRow) => void;
   onDelete: (s: TaskStepRow) => void;
   onAddChild: (parentId: string) => void;
+  onReorder: (step: TaskStepRow, direction: 'up' | 'down') => void;
+  onReorderChild: (child: TaskStepRow, siblings: TaskStepRow[], direction: 'up' | 'down') => void;
+  onUpdateStepDates: (stepId: string, startDate: string, dueDate: string) => void;
+  onDoubleClickStep: (step: TaskStepRow, children: TaskStepRow[], e: React.MouseEvent) => void;
 }) => {
   const completedChildren = childSteps.filter(c => c.complete).length;
   const isComplete = childSteps.length > 0 ? completedChildren === childSteps.length : step.complete;
 
+  // Step date bar calculations
+  const stepStart = step.start_date ? startOfDay(new Date(step.start_date)) : null;
+  const stepEnd = step.due_date ? startOfDay(new Date(step.due_date)) : null;
+  let barLeft = 0, barWidth = 0, showBar = false;
+  if (stepStart && stepEnd) {
+    barLeft = differenceInDays(stepStart, timelineStart) * DAY_WIDTH;
+    barWidth = (differenceInDays(stepEnd, stepStart) + 1) * DAY_WIDTH;
+    showBar = true;
+  } else if (stepStart) {
+    barLeft = differenceInDays(stepStart, timelineStart) * DAY_WIDTH;
+    barWidth = DAY_WIDTH;
+    showBar = true;
+  } else if (stepEnd) {
+    barLeft = differenceInDays(stepEnd, timelineStart) * DAY_WIDTH;
+    barWidth = DAY_WIDTH;
+    showBar = true;
+  }
+
+  // Drawing state — draw-to-assign dates for steps without dates
+  const [stepDrawing, setStepDrawing] = useState<{ startCol: number; endCol: number } | null>(null);
+  const stepDrawRef = useRef(stepDrawing);
+  stepDrawRef.current = stepDrawing;
+
+  useEffect(() => {
+    if (!stepDrawing) return;
+    const el = document.querySelector(`[data-step-timeline="${step.id}"]`);
+    const handleMove = (e: MouseEvent) => {
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const col = Math.max(0, Math.min(timelineDays.length - 1, Math.floor(x / DAY_WIDTH)));
+      setStepDrawing(prev => prev ? { ...prev, endCol: col } : null);
+    };
+    const handleUp = () => {
+      const d = stepDrawRef.current;
+      if (d) {
+        const sc = Math.min(d.startCol, d.endCol);
+        const ec = Math.max(d.startCol, d.endCol);
+        const sd = timelineDays[sc];
+        const ed = timelineDays[ec];
+        if (sd && ed) onUpdateStepDates(step.id, format(sd, 'yyyy-MM-dd'), format(ed, 'yyyy-MM-dd'));
+      }
+      setStepDrawing(null);
+    };
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('mouseup', handleUp);
+    return () => { document.removeEventListener('mousemove', handleMove); document.removeEventListener('mouseup', handleUp); };
+  }, [!!stepDrawing]);
+
+  // Dragging state — resize/move existing step bar
+  const [stepDrag, setStepDrag] = useState<{
+    edge: 'left' | 'right' | 'move'; startX: number;
+    origStart: string; origEnd: string;
+    _newStart?: string; _newEnd?: string;
+  } | null>(null);
+  const stepDragRef = useRef(stepDrag);
+  stepDragRef.current = stepDrag;
+
+  useEffect(() => {
+    if (!stepDrag) return;
+    const initStartX = stepDrag.startX;
+    const initOrigStart = stepDrag.origStart;
+    const initOrigEnd = stepDrag.origEnd;
+    const initEdge = stepDrag.edge;
+    const handleMove = (e: MouseEvent) => {
+      const dx = e.clientX - initStartX;
+      const daysDelta = Math.round(dx / DAY_WIDTH);
+      const origS = startOfDay(new Date(initOrigStart));
+      const origE = startOfDay(new Date(initOrigEnd));
+      let ns = origS, ne = origE;
+      if (initEdge === 'left') { ns = addDays(origS, daysDelta); if (ns > ne) ns = ne; }
+      else if (initEdge === 'right') { ne = addDays(origE, daysDelta); if (ne < ns) ne = ns; }
+      else { ns = addDays(origS, daysDelta); ne = addDays(origE, daysDelta); }
+      setStepDrag(prev => prev ? { ...prev, _newStart: format(ns, 'yyyy-MM-dd'), _newEnd: format(ne, 'yyyy-MM-dd') } : null);
+    };
+    const handleUp = () => {
+      const d = stepDragRef.current;
+      if (d) {
+        const ns = d._newStart ?? d.origStart;
+        const ne = d._newEnd ?? d.origEnd;
+        if (ns !== d.origStart || ne !== d.origEnd) onUpdateStepDates(step.id, ns, ne);
+      }
+      setStepDrag(null);
+    };
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('mouseup', handleUp);
+    return () => { document.removeEventListener('mousemove', handleMove); document.removeEventListener('mouseup', handleUp); };
+  }, [!!stepDrag]);
+
+  // Compute display bar (uses drag state if active)
+  const displayStart = stepDrag?._newStart ? startOfDay(new Date(stepDrag._newStart)) : stepStart;
+  const displayEnd = stepDrag?._newEnd ? startOfDay(new Date(stepDrag._newEnd)) : stepEnd;
+  let dispBarLeft = barLeft, dispBarWidth = barWidth;
+  if (stepDrag && displayStart && displayEnd) {
+    dispBarLeft = differenceInDays(displayStart, timelineStart) * DAY_WIDTH;
+    dispBarWidth = (differenceInDays(displayEnd, displayStart) + 1) * DAY_WIDTH;
+  }
+
+  // Drawing preview calculations
+  const drawLeft = stepDrawing ? Math.min(stepDrawing.startCol, stepDrawing.endCol) * DAY_WIDTH : 0;
+  const drawWidth = stepDrawing ? (Math.abs(stepDrawing.endCol - stepDrawing.startCol) + 1) * DAY_WIDTH : 0;
+
   return (
     <>
       {/* Parent step row */}
-      <div className="flex">
+      <div className="flex group/srow" onDoubleClick={e => onDoubleClickStep(step, childSteps, e)}>
         {/* Left label */}
-        <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 h-7 flex items-center pl-7 pr-2 border-b border-border/30 gap-1.5 group/srow">
+        <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 h-7 flex items-center pl-5 pr-2 border-b border-border/30 gap-1">
+          <DragGrip onReorder={(dir) => onReorder(step, dir)} />
           <button onClick={() => onToggle(step)} className="flex items-center gap-1.5 flex-1 min-w-0 text-left">
             <div className={cn(
               "h-3 w-3 rounded-sm border flex items-center justify-center shrink-0 transition-colors",
-              isComplete ? "bg-ops-green/15 border-ops-green/40" : "border-border",
+              step.status === 'Complete' || isComplete ? "bg-ops-green/15 border-ops-green/40" :
+              step.status === 'In Progress' ? "bg-blue-500/15 border-blue-500/40" :
+              step.status === 'Blocked' ? "bg-accent/15 border-accent/40" : "border-border",
             )}>
               {isComplete && <Check className="h-2 w-2 text-ops-green" />}
+              {step.status === 'Blocked' && !isComplete && <AlertCircle className="h-2 w-2 text-accent" />}
             </div>
-            <span className={cn("text-[10px] truncate", isComplete ? "text-muted-foreground line-through" : "text-foreground")}>{step.step_name}</span>
+            <span className={cn("text-[10px] truncate", isComplete ? "text-muted-foreground line-through" : step.status === 'Blocked' ? "text-accent" : "text-foreground")}>{step.step_name}</span>
+            {step.assigned_to && (
+              <span className="text-[8px] text-muted-foreground/60 truncate shrink-0 max-w-[50px]">{step.assigned_to.split('@')[0]}</span>
+            )}
           </button>
           {childSteps.length > 0 && (
             <span className="text-[9px] font-mono text-muted-foreground">{completedChildren}/{childSteps.length}</span>
@@ -808,14 +1002,73 @@ const GanttStepRow = ({
             <Trash2 className="h-2.5 w-2.5" />
           </button>
         </div>
-        {/* Right timeline (empty row) */}
-        <div className="flex-1 h-7 border-b border-border/30 relative">
-          {/* Progress bar spanning all parents equally */}
-          {allParents.length > 0 && (
-            <div className="absolute top-2 left-1 right-1 h-3 rounded-sm bg-muted/30 overflow-hidden">
-              <div className={cn("h-full rounded-sm transition-all", isComplete ? "bg-ops-green/40" : "bg-muted-foreground/15")}
-                style={{ width: isComplete ? '100%' : childSteps.length > 0 ? `${(completedChildren / childSteps.length) * 100}%` : '0%' }}
+        {/* Right timeline — date bar or draw zone */}
+        <div
+          className={cn("flex-1 h-7 border-b border-border/30 relative", !showBar && "cursor-crosshair")}
+          data-step-timeline={step.id}
+          onMouseDown={!showBar && !stepDrawing ? (e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const col = Math.max(0, Math.min(timelineDays.length - 1, Math.floor(x / DAY_WIDTH)));
+            setStepDrawing({ startCol: col, endCol: col });
+          } : undefined}
+        >
+          {/* Weekend shading */}
+          {timelineDays.map((day, i) => {
+            if (day.getDay() !== 0 && day.getDay() !== 6) return null;
+            return <div key={i} className="absolute top-0 bottom-0 bg-muted/20" style={{ left: i * DAY_WIDTH, width: DAY_WIDTH }} />;
+          })}
+
+          {/* Drawing preview */}
+          {stepDrawing && !showBar && (
+            <div className="absolute top-1 h-5 rounded-sm bg-accent/20 border border-accent/40 pointer-events-none z-20"
+              style={{ left: drawLeft, width: drawWidth }}>
+              <span className="absolute inset-0 flex items-center justify-center text-[7px] font-mono text-accent">
+                {Math.abs(stepDrawing.endCol - stepDrawing.startCol) + 1}d
+              </span>
+            </div>
+          )}
+
+          {/* Date bar */}
+          {showBar ? (
+            <div
+              className={cn("absolute top-1 h-5 flex items-center group/sbar", stepStart && stepEnd ? "cursor-grab active:cursor-grabbing" : "")}
+              style={{ left: dispBarLeft, width: dispBarWidth }}
+              onMouseDown={stepStart && stepEnd ? (e) => {
+                e.preventDefault();
+                setStepDrag({ edge: 'move', startX: e.clientX, origStart: step.start_date!, origEnd: step.due_date! });
+              } : undefined}
+            >
+              <div className={cn("absolute inset-0 rounded-sm",
+                step.status === 'Complete' ? "bg-ops-green/30" :
+                step.status === 'In Progress' ? "bg-blue-500/25" :
+                step.status === 'Blocked' ? "bg-accent/25" : "bg-muted-foreground/20"
+              )} />
+              <div className={cn("absolute top-0 bottom-0 left-0 rounded-sm",
+                step.status === 'Complete' ? "bg-ops-green/60" :
+                step.status === 'In Progress' ? "bg-blue-500/50" :
+                step.status === 'Blocked' ? "bg-accent/50" : "bg-muted-foreground/30"
+              )}
+                style={{ width: childSteps.length > 0 ? `${(completedChildren / childSteps.length) * 100}%` : isComplete ? '100%' : '0%' }}
               />
+              {dispBarWidth > 40 && (
+                <span className="relative z-10 px-1 text-[8px] font-medium text-foreground/70 truncate pointer-events-none">{step.step_name}</span>
+              )}
+              {/* Resize handles */}
+              {stepStart && stepEnd && (
+                <>
+                  <div className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover/sbar:opacity-100 bg-foreground/20 rounded-l-sm z-20"
+                    onMouseDown={e => { e.stopPropagation(); e.preventDefault(); setStepDrag({ edge: 'left', startX: e.clientX, origStart: step.start_date!, origEnd: step.due_date! }); }}
+                  />
+                  <div className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover/sbar:opacity-100 bg-foreground/20 rounded-r-sm z-20"
+                    onMouseDown={e => { e.stopPropagation(); e.preventDefault(); setStepDrag({ edge: 'right', startX: e.clientX, origStart: step.start_date!, origEnd: step.due_date! }); }}
+                  />
+                </>
+              )}
+            </div>
+          ) : !stepDrawing && (
+            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/srow:opacity-100 transition-opacity pointer-events-none">
+              <span className="text-[8px] text-muted-foreground/50 italic">Drag to set dates</span>
             </div>
           )}
         </div>
@@ -823,8 +1076,9 @@ const GanttStepRow = ({
 
       {/* Child step rows */}
       {childSteps.map(child => (
-        <div key={child.id} className="flex">
-          <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 h-6 flex items-center pl-12 pr-2 border-b border-border/20 gap-1.5 group/crow">
+        <div key={child.id} className="flex group/crow" onDoubleClick={e => onDoubleClickStep(child, [], e)}>
+          <div className="shrink-0 w-[220px] border-r border-border bg-card z-10 h-6 flex items-center pl-10 pr-2 border-b border-border/20 gap-1">
+            <DragGrip onReorder={(dir) => onReorderChild(child, childSteps, dir)} />
             <button onClick={() => onToggleChild(child, childSteps, step)} className="flex items-center gap-1.5 flex-1 min-w-0 text-left">
               <div className={cn(
                 "h-2.5 w-2.5 rounded-sm border flex items-center justify-center shrink-0 transition-colors",
@@ -845,11 +1099,225 @@ const GanttStepRow = ({
   );
 };
 
+const STEP_STATUS_OPTIONS = [
+  { value: 'Not Started', label: 'NS', color: 'bg-muted-foreground/40', activeColor: 'bg-muted-foreground' },
+  { value: 'In Progress', label: 'IP', color: 'bg-blue-500/30', activeColor: 'bg-blue-500' },
+  { value: 'Blocked', label: 'BL', color: 'bg-accent/30', activeColor: 'bg-accent' },
+  { value: 'Complete', label: 'DN', color: 'bg-ops-green/30', activeColor: 'bg-ops-green' },
+] as const;
+
+// ── Gantt Step Popover (double-click a sub-task row) ──────────
+
+const GanttStepPopover = ({
+  step,
+  childSteps,
+  x,
+  y,
+  onClose,
+  onSave,
+  onDelete,
+}: {
+  step: TaskStepRow;
+  childSteps: TaskStepRow[];
+  x: number;
+  y: number;
+  onClose: () => void;
+  onSave: (updates: { id: string; step_name?: string; start_date?: string | null; due_date?: string | null; complete?: boolean; status?: string; assigned_to?: string | null }) => Promise<void>;
+  onDelete: (step: TaskStepRow) => void;
+}) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [form, setForm] = useState({
+    step_name: step.step_name,
+    start_date: step.start_date ?? '',
+    due_date: step.due_date ?? '',
+    complete: step.complete,
+    status: step.status ?? 'Not Started',
+    assigned_to: step.assigned_to ?? '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [onClose]);
+
+  const style = useMemo(() => {
+    const w = 280, h = 440;
+    let left = x + 8;
+    let top = y - h / 2;
+    if (typeof window !== 'undefined') {
+      if (left + w > window.innerWidth - 12) left = x - w - 8;
+      if (top < 12) top = 12;
+      if (top + h > window.innerHeight - 12) top = window.innerHeight - h - 12;
+    }
+    return { left, top };
+  }, [x, y]);
+
+  const completedChildren = childSteps.filter(c => c.complete).length;
+  const progress = childSteps.length > 0
+    ? Math.round((completedChildren / childSteps.length) * 100)
+    : form.complete ? 100 : 0;
+  const duration = form.start_date && form.due_date
+    ? differenceInDays(new Date(form.due_date), new Date(form.start_date)) + 1
+    : null;
+
+  // Sync complete flag with status
+  const handleStatusChange = (status: string) => {
+    setForm(p => ({
+      ...p,
+      status,
+      complete: status === 'Complete',
+    }));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await onSave({
+        id: step.id,
+        step_name: form.step_name.trim(),
+        start_date: form.start_date || null,
+        due_date: form.due_date || null,
+        complete: form.complete,
+        status: form.status,
+        assigned_to: form.assigned_to.trim() || null,
+      });
+      onClose();
+    } catch { /* parent handles toast */ }
+    setSaving(false);
+  };
+
+  return (
+    <div
+      ref={ref}
+      className="fixed z-50 w-[280px] rounded-lg border border-border bg-card shadow-xl animate-in fade-in-0 zoom-in-95 duration-100"
+      style={{ left: style.left, top: style.top }}
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between gap-2 border-b border-border px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Sub-task</p>
+        </div>
+        <button onClick={onClose} className="p-0.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground shrink-0">
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+
+      <div className="p-3 space-y-3">
+        {/* Name */}
+        <div>
+          <label className="text-[10px] font-medium text-muted-foreground">Name</label>
+          <input
+            type="text"
+            value={form.step_name}
+            onChange={e => setForm(p => ({ ...p, step_name: e.target.value }))}
+            className="w-full rounded border border-input bg-background px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring mt-0.5"
+          />
+        </div>
+
+        {/* Progress */}
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-medium text-muted-foreground">Progress</span>
+            <span className="text-[10px] font-mono text-foreground">{progress}%</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+            <div className="h-full rounded-full bg-ops-green transition-all" style={{ width: `${progress}%` }} />
+          </div>
+          {childSteps.length > 0 && (
+            <p className="text-[9px] text-muted-foreground mt-1">{completedChildren}/{childSteps.length} items complete</p>
+          )}
+          {duration !== null && (
+            <p className="text-[9px] text-muted-foreground mt-0.5">{duration} day{duration !== 1 ? 's' : ''}</p>
+          )}
+        </div>
+
+        {/* Status */}
+        <div>
+          <label className="text-[10px] font-medium text-muted-foreground">Status</label>
+          <div className="flex gap-1 mt-1">
+            {STEP_STATUS_OPTIONS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => handleStatusChange(opt.value)}
+                className={cn(
+                  "flex-1 rounded px-1.5 py-1 text-[10px] font-medium transition-all",
+                  form.status === opt.value
+                    ? cn(opt.activeColor, "text-background")
+                    : "bg-muted text-muted-foreground hover:bg-muted/80",
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Assigned To */}
+        <div>
+          <label className="text-[10px] font-medium text-muted-foreground">Assigned To</label>
+          <input
+            type="text"
+            value={form.assigned_to}
+            onChange={e => setForm(p => ({ ...p, assigned_to: e.target.value }))}
+            placeholder="email or name"
+            className="w-full rounded border border-input bg-background px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring mt-0.5"
+          />
+        </div>
+
+        {/* Dates */}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] font-medium text-muted-foreground">Start</label>
+            <input
+              type="date"
+              value={form.start_date}
+              onChange={e => setForm(p => ({ ...p, start_date: e.target.value }))}
+              className="w-full rounded border border-input bg-background px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-medium text-muted-foreground">Due</label>
+            <input
+              type="date"
+              value={form.due_date}
+              onChange={e => setForm(p => ({ ...p, due_date: e.target.value }))}
+              className="w-full rounded border border-input bg-background px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSave}
+            disabled={saving || !form.step_name.trim()}
+            className="flex-1 flex items-center justify-center gap-1 rounded bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground hover:bg-accent/90 transition-colors disabled:opacity-50"
+          >
+            {saving && <Loader2 className="h-3 w-3 animate-spin" />}
+            Save
+          </button>
+          <button
+            onClick={() => { onDelete(step); onClose(); }}
+            className="p-1.5 rounded border border-accent/30 text-accent hover:bg-accent/10 transition-colors"
+            title="Delete sub-task"
+          >
+            <Trash2 className="h-3 w-3" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ── Status quick-action pills ─────────────────────────────────
 
 const STATUS_OPTIONS = [
   { value: 'Not Started', label: 'NS', color: 'bg-muted-foreground/40', activeColor: 'bg-muted-foreground' },
-  { value: 'In Progress', label: 'IP', color: 'bg-foreground/30', activeColor: 'bg-foreground' },
+  { value: 'In Progress', label: 'IP', color: 'bg-blue-500/30', activeColor: 'bg-blue-500' },
   { value: 'Blocked', label: 'BL', color: 'bg-accent/30', activeColor: 'bg-accent' },
   { value: 'Complete', label: 'DN', color: 'bg-ops-green/30', activeColor: 'bg-ops-green' },
 ] as const;
@@ -863,6 +1331,9 @@ const GanttTaskRow = ({
   todayOffset,
   isSelected,
   onSelect,
+  onDeleteTask,
+  onDoubleClickBar,
+  onDoubleClickStep,
   statusColor,
   statusProgressColor,
   onDragStart,
@@ -875,6 +1346,9 @@ const GanttTaskRow = ({
   todayOffset: number;
   isSelected: boolean;
   onSelect: (task: TaskRow) => void;
+  onDeleteTask: (task: TaskRow) => void;
+  onDoubleClickBar: (task: TaskRow, e: React.MouseEvent) => void;
+  onDoubleClickStep: (step: TaskStepRow, children: TaskStepRow[], e: React.MouseEvent) => void;
   statusColor: (s: string) => string;
   statusProgressColor: (s: string) => string;
   onDragStart: (task: TaskRow, edge: 'left' | 'right' | 'move', e: React.MouseEvent) => void;
@@ -888,6 +1362,7 @@ const GanttTaskRow = ({
   const updateTask = useUpdateTask();
   const createStep = useCreateTaskStep();
   const deleteStep = useDeleteTaskStep();
+  const reorderSteps = useReorderTaskSteps();
 
   const [addingStepName, setAddingStepName] = useState('');
   const [showAddStep, setShowAddStep] = useState(false);
@@ -905,6 +1380,42 @@ const GanttTaskRow = ({
     map.forEach(list => list.sort((a, b) => a.sort_order - b.sort_order));
     return map;
   }, [steps]);
+
+  // Reorder parent steps
+  const handleReorderParent = async (step: TaskStepRow, direction: 'up' | 'down') => {
+    const idx = parentSteps.findIndex(s => s.id === step.id);
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= parentSteps.length) return;
+    const target = parentSteps[targetIdx];
+    try {
+      await reorderSteps.mutateAsync([
+        { id: step.id, sort_order: target.sort_order, task_id: task.id },
+        { id: target.id, sort_order: step.sort_order, task_id: task.id },
+      ]);
+    } catch { toast.error('Failed to reorder'); }
+  };
+
+  // Reorder child steps
+  const handleReorderChild = async (child: TaskStepRow, siblings: TaskStepRow[], direction: 'up' | 'down') => {
+    const idx = siblings.findIndex(s => s.id === child.id);
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= siblings.length) return;
+    const target = siblings[targetIdx];
+    try {
+      await reorderSteps.mutateAsync([
+        { id: child.id, sort_order: target.sort_order, task_id: task.id },
+        { id: target.id, sort_order: child.sort_order, task_id: task.id },
+      ]);
+    } catch { toast.error('Failed to reorder'); }
+  };
+
+  // Update step dates
+  const handleUpdateStepDates = async (stepId: string, startDate: string, dueDate: string) => {
+    try {
+      await updateStep.mutateAsync({ id: stepId, start_date: startDate, due_date: dueDate });
+      toast.success('Step dates updated');
+    } catch { toast.error('Failed to update step dates'); }
+  };
 
   const rebalanceWeights = async (parents: { id: string; complete: boolean }[]) => {
     if (parents.length === 0) return;
@@ -1059,6 +1570,13 @@ const GanttTaskRow = ({
               {task.assigned_to ? task.assigned_to.split('@')[0] : '—'}
             </p>
           </button>
+          <button
+            onClick={() => onDeleteTask(task)}
+            className="p-0.5 shrink-0 rounded opacity-0 group-hover/taskrow:opacity-100 text-muted-foreground hover:text-accent transition-all"
+            title="Delete task"
+          >
+            <Trash2 className="h-3 w-3" />
+          </button>
         </div>
 
         {/* Right timeline bar */}
@@ -1098,6 +1616,7 @@ const GanttTaskRow = ({
                   onDragStart(task, 'move', e);
                 }
               }}
+              onDoubleClick={e => { e.stopPropagation(); onDoubleClickBar(task, e); }}
             >
               <div className={cn("absolute inset-0 rounded-sm opacity-25", statusColor(task.status))} />
               <div className={cn("absolute top-0 bottom-0 left-0 rounded-sm", statusProgressColor(task.status))} style={{ width: `${Math.min(progress * 100, 100)}%` }} />
@@ -1143,6 +1662,10 @@ const GanttTaskRow = ({
               onToggleChild={handleToggleChild}
               onDelete={handleDeleteStep}
               onAddChild={(parentId) => { setAddingChildForId(parentId); setChildName(''); }}
+              onReorder={handleReorderParent}
+              onReorderChild={handleReorderChild}
+              onUpdateStepDates={handleUpdateStepDates}
+              onDoubleClickStep={onDoubleClickStep}
             />
           ))}
 
@@ -1193,7 +1716,7 @@ const GanttTaskRow = ({
 
 // ── Gantt Edit Panel (right sidebar) ─────────────────────────
 
-const GanttEditPanel = ({ task, onClose }: { task: TaskRow; onClose: () => void }) => {
+const GanttEditPanel = ({ task, onClose, onDeleteTask }: { task: TaskRow; onClose: () => void; onDeleteTask: (task: TaskRow) => void }) => {
   const updateTask = useUpdateTask();
   const [form, setForm] = useState({
     task_name: task.task_name,
@@ -1305,6 +1828,205 @@ const GanttEditPanel = ({ task, onClose }: { task: TaskRow; onClose: () => void 
           {updateTask.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
           Save
         </Button>
+        <button
+          onClick={() => onDeleteTask(task)}
+          className="w-full flex items-center justify-center gap-1.5 rounded border border-accent/30 bg-accent/5 px-3 py-1.5 text-[11px] font-medium text-accent hover:bg-accent/10 transition-colors mt-2"
+        >
+          <Trash2 className="h-3 w-3" />
+          Delete Task
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ── Gantt Bar Popover (click a bar to quick-edit) ─────────────
+
+const GanttBarPopover = ({
+  task,
+  x,
+  y,
+  onClose,
+  onSave,
+  onDeleteTask,
+}: {
+  task: TaskRow;
+  x: number;
+  y: number;
+  onClose: () => void;
+  onSave: (updates: Partial<TaskRow> & { id: string }) => Promise<void>;
+  onDeleteTask: (task: TaskRow) => void;
+}) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [form, setForm] = useState({
+    start_date: task.start_date ?? '',
+    due_date: task.due_date ?? '',
+    status: task.status,
+    assigned_to: task.assigned_to ?? '',
+    notes: task.notes ?? '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  // Click outside to close
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [onClose]);
+
+  // Clamp position so the popover stays on screen
+  const style = useMemo(() => {
+    const w = 280, h = 400;
+    let left = x + 8;
+    let top = y - h / 2;
+    if (typeof window !== 'undefined') {
+      if (left + w > window.innerWidth - 12) left = x - w - 8;
+      if (top < 12) top = 12;
+      if (top + h > window.innerHeight - 12) top = window.innerHeight - h - 12;
+    }
+    return { left, top };
+  }, [x, y]);
+
+  const progress = Math.round(Number(task.progress) * 100);
+  const duration = task.start_date && task.due_date
+    ? differenceInDays(new Date(task.due_date), new Date(task.start_date)) + 1
+    : null;
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await onSave({
+        id: task.id,
+        start_date: form.start_date || null,
+        due_date: form.due_date || null,
+        status: form.status,
+        assigned_to: form.assigned_to.trim() || null,
+        notes: form.notes.trim() || null,
+      });
+      onClose();
+    } catch { /* parent handles toast */ }
+    setSaving(false);
+  };
+
+  return (
+    <div
+      ref={ref}
+      className="fixed z-50 w-[280px] rounded-lg border border-border bg-card shadow-xl animate-in fade-in-0 zoom-in-95 duration-100"
+      style={{ left: style.left, top: style.top }}
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between gap-2 border-b border-border px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-foreground truncate">{task.task_name}</p>
+          <p className="text-[10px] text-muted-foreground">{task.phase} · {task.priority}</p>
+        </div>
+        <button onClick={onClose} className="p-0.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground shrink-0">
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+
+      <div className="p-3 space-y-3">
+        {/* Progress bar */}
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-medium text-muted-foreground">Progress</span>
+            <span className="text-[10px] font-mono text-foreground">{progress}%</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+            <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${progress}%` }} />
+          </div>
+          {duration !== null && (
+            <p className="text-[9px] text-muted-foreground mt-1">{duration} day{duration !== 1 ? 's' : ''}</p>
+          )}
+        </div>
+
+        {/* Dates */}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] font-medium text-muted-foreground">Start</label>
+            <input
+              type="date"
+              value={form.start_date}
+              onChange={e => setForm(p => ({ ...p, start_date: e.target.value }))}
+              className="w-full rounded border border-input bg-background px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-medium text-muted-foreground">Due</label>
+            <input
+              type="date"
+              value={form.due_date}
+              onChange={e => setForm(p => ({ ...p, due_date: e.target.value }))}
+              className="w-full rounded border border-input bg-background px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        </div>
+
+        {/* Status */}
+        <div>
+          <label className="text-[10px] font-medium text-muted-foreground">Status</label>
+          <div className="flex gap-1 mt-1">
+            {STATUS_OPTIONS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setForm(p => ({ ...p, status: opt.value }))}
+                className={cn(
+                  "flex-1 rounded px-1.5 py-1 text-[10px] font-medium transition-all",
+                  form.status === opt.value
+                    ? cn(opt.activeColor, "text-background")
+                    : "bg-muted text-muted-foreground hover:bg-muted/80",
+                )}
+              >
+                {opt.value === 'Not Started' ? 'Not Started' : opt.value === 'In Progress' ? 'In Progress' : opt.value}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Assigned To */}
+        <div>
+          <label className="text-[10px] font-medium text-muted-foreground">Assigned To</label>
+          <input
+            type="text"
+            value={form.assigned_to}
+            onChange={e => setForm(p => ({ ...p, assigned_to: e.target.value }))}
+            placeholder="email or name"
+            className="w-full rounded border border-input bg-background px-1.5 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring mt-0.5"
+          />
+        </div>
+
+        {/* Notes */}
+        <div>
+          <label className="text-[10px] font-medium text-muted-foreground">Notes</label>
+          <textarea
+            value={form.notes}
+            onChange={e => setForm(p => ({ ...p, notes: e.target.value }))}
+            rows={2}
+            placeholder="Add notes..."
+            className="w-full rounded border border-input bg-background px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring resize-none mt-0.5"
+          />
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex-1 flex items-center justify-center gap-1 rounded bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground hover:bg-accent/90 transition-colors disabled:opacity-50"
+          >
+            {saving && <Loader2 className="h-3 w-3 animate-spin" />}
+            Save
+          </button>
+          <button
+            onClick={() => { onDeleteTask(task); onClose(); }}
+            className="p-1.5 rounded border border-accent/30 text-accent hover:bg-accent/10 transition-colors"
+            title="Delete task"
+          >
+            <Trash2 className="h-3 w-3" />
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1317,6 +2039,7 @@ const DAY_WIDTH = 36;
 const GanttView = ({ tasks }: { tasks: TaskRow[] }) => {
   const today = startOfDay(new Date());
   const updateTask = useUpdateTask();
+  const deleteTask = useDeleteTask();
 
   const { timelineStart, timelineDays } = useMemo(() => {
     const datesWithValues = tasks.flatMap(t => {
@@ -1365,17 +2088,58 @@ const GanttView = ({ tasks }: { tasks: TaskRow[] }) => {
   }, [tasks]);
 
   const statusColor = (status: string) => {
-    switch (status) { case 'Complete': return 'bg-ops-green'; case 'In Progress': return 'bg-foreground'; case 'Blocked': return 'bg-accent'; default: return 'bg-muted-foreground/40'; }
+    switch (status) { case 'Complete': return 'bg-ops-green'; case 'In Progress': return 'bg-blue-500'; case 'Blocked': return 'bg-accent'; default: return 'bg-muted-foreground/40'; }
   };
   const statusProgressColor = (status: string) => {
-    switch (status) { case 'Complete': return 'bg-ops-green'; case 'In Progress': return 'bg-foreground/70'; case 'Blocked': return 'bg-accent/70'; default: return 'bg-muted-foreground/30'; }
+    switch (status) { case 'Complete': return 'bg-ops-green'; case 'In Progress': return 'bg-blue-500/70'; case 'Blocked': return 'bg-accent/70'; default: return 'bg-muted-foreground/30'; }
   };
 
   const [selectedTask, setSelectedTask] = useState<TaskRow | null>(null);
 
+  const handleDeleteTask = useCallback(async (task: TaskRow) => {
+    try {
+      await deleteTask.mutateAsync({ id: task.id, version_id: task.version_id! });
+      toast.success(`Deleted "${task.task_name}"`);
+      setSelectedTask(prev => prev?.id === task.id ? null : prev);
+    } catch { toast.error('Failed to delete task'); }
+  }, [deleteTask]);
+
+  // ── Bar popover (double-click a bar to edit inline) ────────────
+  const [popover, setPopover] = useState<{ task: TaskRow; clientX: number; clientY: number } | null>(null);
+
+  const handleDoubleClickBar = useCallback((task: TaskRow, e: React.MouseEvent) => {
+    setDragging(null);
+    setStepPopover(null);
+    setPopover({ task, clientX: e.clientX, clientY: e.clientY });
+  }, []);
+
+  // ── Step popover (double-click a sub-task row) ────────────
+  const [stepPopover, setStepPopover] = useState<{ step: TaskStepRow; children: TaskStepRow[]; clientX: number; clientY: number } | null>(null);
+  const updateStepForPopover = useUpdateTaskStep();
+
+  const handleDoubleClickStep = useCallback((step: TaskStepRow, children: TaskStepRow[], e: React.MouseEvent) => {
+    setPopover(null);
+    setStepPopover({ step, children, clientX: e.clientX, clientY: e.clientY });
+  }, []);
+
+  const handleStepPopoverSave = useCallback(async (updates: { id: string; step_name?: string; start_date?: string | null; due_date?: string | null; complete?: boolean; status?: string; assigned_to?: string | null }) => {
+    try {
+      await updateStepForPopover.mutateAsync(updates);
+      toast.success('Sub-task updated');
+    } catch { toast.error('Failed to update sub-task'); throw new Error(); }
+  }, [updateStepForPopover]);
+
+  const deleteStepForPopover = useDeleteTaskStep();
+  const handleStepPopoverDelete = useCallback(async (step: TaskStepRow) => {
+    try {
+      await deleteStepForPopover.mutateAsync({ id: step.id, task_id: step.task_id });
+      toast.success('Sub-task deleted');
+    } catch { toast.error('Failed to delete sub-task'); }
+  }, [deleteStepForPopover]);
+
   // ── Drag (resize/move existing bar) ─────────────────────
   const [dragging, setDragging] = useState<{
-    task: TaskRow; edge: 'left' | 'right' | 'move'; startX: number;
+    task: TaskRow; edge: 'left' | 'right' | 'move'; startX: number; startY: number;
     origStart: string; origEnd: string; moved: boolean;
     _newStart?: string; _newEnd?: string;
   } | null>(null);
@@ -1383,17 +2147,19 @@ const GanttView = ({ tasks }: { tasks: TaskRow[] }) => {
   const handleDragStart = useCallback((task: TaskRow, edge: 'left' | 'right' | 'move', e: React.MouseEvent) => {
     e.preventDefault();
     if (!task.start_date || !task.due_date) return;
-    setDragging({ task, edge, startX: e.clientX, origStart: task.start_date, origEnd: task.due_date, moved: false });
+    setPopover(null);
+    setDragging({ task, edge, startX: e.clientX, startY: e.clientY, origStart: task.start_date, origEnd: task.due_date, moved: false });
   }, []);
 
   // ── Draw (paint new bar for tasks without dates) ────────
   const [drawing, setDrawing] = useState<{
-    task: TaskRow; startCol: number; endCol: number;
+    task: TaskRow; startCol: number; endCol: number; clientY: number;
   } | null>(null);
 
   const handleDrawStart = useCallback((task: TaskRow, colIndex: number, e: React.MouseEvent) => {
     e.preventDefault();
-    setDrawing({ task, startCol: colIndex, endCol: colIndex });
+    setPopover(null);
+    setDrawing({ task, startCol: colIndex, endCol: colIndex, clientY: e.clientY });
   }, []);
 
   // ── Unified mouse handlers ──────────────────────────────
@@ -1449,8 +2215,7 @@ const GanttView = ({ tasks }: { tasks: TaskRow[] }) => {
       const newEndStr = dragging._newEnd ?? dragging.origEnd;
 
       if (!dragging.moved) {
-        // No movement → treat as click → select task
-        setSelectedTask(dragging.task);
+        // No movement → single click — no-op (double-click opens popover)
       } else if (newStartStr !== dragging.origStart || newEndStr !== dragging.origEnd) {
         try {
           await updateTask.mutateAsync({ id: dragging.task.id, start_date: newStartStr, due_date: newEndStr });
@@ -1467,22 +2232,38 @@ const GanttView = ({ tasks }: { tasks: TaskRow[] }) => {
       const endCol = Math.max(drawing.startCol, drawing.endCol);
       const startDate = timelineDays[startCol];
       const endDate = timelineDays[endCol];
+      const drawTask = drawing.task;
+      const drawClientY = drawing.clientY;
 
       if (startDate && endDate) {
         const startStr = format(startDate, 'yyyy-MM-dd');
         const endStr = format(endDate, 'yyyy-MM-dd');
         try {
-          await updateTask.mutateAsync({ id: drawing.task.id, start_date: startStr, due_date: endStr });
-          toast.success(`${drawing.task.task_name}: ${format(startDate, 'MMM d')} → ${format(endDate, 'MMM d')}`);
+          await updateTask.mutateAsync({ id: drawTask.id, start_date: startStr, due_date: endStr });
+          toast.success(`${drawTask.task_name}: ${format(startDate, 'MMM d')} → ${format(endDate, 'MMM d')}`);
+          // Open popover for the freshly-drawn task
+          setPopover({
+            task: { ...drawTask, start_date: startStr, due_date: endStr },
+            clientX: (Math.min(startCol, endCol) * DAY_WIDTH) + 220,
+            clientY: drawClientY,
+          });
         } catch { toast.error('Failed to set dates'); }
       }
       setDrawing(null);
     }
   }, [dragging, drawing, updateTask, timelineDays]);
 
+  const handlePopoverSave = useCallback(async (updates: Partial<TaskRow> & { id: string }) => {
+    try {
+      await updateTask.mutateAsync(updates);
+      toast.success('Task updated');
+    } catch { toast.error('Failed to update task'); throw new Error(); }
+  }, [updateTask]);
+
   const isInteracting = !!dragging || !!drawing;
 
   return (
+    <>
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="kpi-card p-0 overflow-hidden">
       <div className="flex" onMouseMove={isInteracting ? handleMouseMove : undefined} onMouseUp={isInteracting ? handleMouseUp : undefined} onMouseLeave={isInteracting ? handleMouseUp : undefined}>
         {/* Left labels + Right timeline (combined rows) */}
@@ -1553,6 +2334,9 @@ const GanttView = ({ tasks }: { tasks: TaskRow[] }) => {
                     todayOffset={todayOffset}
                     isSelected={selectedTask?.id === task.id}
                     onSelect={setSelectedTask}
+                    onDeleteTask={handleDeleteTask}
+                    onDoubleClickBar={handleDoubleClickBar}
+                    onDoubleClickStep={handleDoubleClickStep}
                     statusColor={statusColor}
                     statusProgressColor={statusProgressColor}
                     onDragStart={handleDragStart}
@@ -1582,12 +2366,39 @@ const GanttView = ({ tasks }: { tasks: TaskRow[] }) => {
               transition={{ duration: 0.15 }}
               className="overflow-hidden"
             >
-              <GanttEditPanel task={selectedTask} onClose={() => setSelectedTask(null)} />
+              <GanttEditPanel task={selectedTask} onClose={() => setSelectedTask(null)} onDeleteTask={handleDeleteTask} />
             </motion.div>
           )}
         </AnimatePresence>
       </div>
+
     </motion.div>
+
+    {/* Bar popover (double-click a bar → inline edit card) — rendered outside motion.div to avoid overflow clip */}
+    {popover && (
+      <GanttBarPopover
+        task={popover.task}
+        x={popover.clientX}
+        y={popover.clientY}
+        onClose={() => setPopover(null)}
+        onSave={handlePopoverSave}
+        onDeleteTask={handleDeleteTask}
+      />
+    )}
+
+    {/* Step popover (double-click a sub-task row) */}
+    {stepPopover && (
+      <GanttStepPopover
+        step={stepPopover.step}
+        childSteps={stepPopover.children}
+        x={stepPopover.clientX}
+        y={stepPopover.clientY}
+        onClose={() => setStepPopover(null)}
+        onSave={handleStepPopoverSave}
+        onDelete={handleStepPopoverDelete}
+      />
+    )}
+    </>
   );
 };
 

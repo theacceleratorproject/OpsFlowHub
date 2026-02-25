@@ -466,6 +466,10 @@ export type Database = {
           complete: boolean
           sort_order: number
           parent_step_id: string | null
+          start_date: string | null
+          due_date: string | null
+          status: string
+          assigned_to: string | null
           created_at: string
         }
         Insert: {
@@ -476,6 +480,10 @@ export type Database = {
           complete?: boolean
           sort_order?: number
           parent_step_id?: string | null
+          start_date?: string | null
+          due_date?: string | null
+          status?: string
+          assigned_to?: string | null
           created_at?: string
         }
         Update: {
@@ -486,6 +494,10 @@ export type Database = {
           complete?: boolean
           sort_order?: number
           parent_step_id?: string | null
+          start_date?: string | null
+          due_date?: string | null
+          status?: string
+          assigned_to?: string | null
           created_at?: string
         }
         Relationships: [
