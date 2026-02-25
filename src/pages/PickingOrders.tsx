@@ -1,13 +1,14 @@
 import { useProject } from '@/contexts/ProjectContext';
-import { usePickingOrders, useCreatePickingOrder, useUpdatePickingOrder } from '@/hooks/use-supabase-data';
+import { usePickingOrders, useCreatePickingOrder, useUpdatePickingOrder, useCreateIssue } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
-import { Truck, Plus, Loader2 } from 'lucide-react';
+import { Truck, Plus, Loader2, AlertTriangle } from 'lucide-react';
 import { useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 
 const PickingOrders = () => {
@@ -16,11 +17,15 @@ const PickingOrders = () => {
   const { data: picks = [], isLoading } = usePickingOrders(versionId);
   const createPick = useCreatePickingOrder();
   const updatePick = useUpdatePickingOrder();
+  const createIssue = useCreateIssue();
 
   const [showCreate, setShowCreate] = useState(false);
   const [newPick, setNewPick] = useState({
     work_order_number: '', part_number: '', pick_qty: '', bin_location: '', assigned_picker: '',
   });
+  const [pickConfirm, setPickConfirm] = useState<{ id: string; part_number: string; pick_qty: number } | null>(null);
+  const [pickedQtyInput, setPickedQtyInput] = useState('');
+  const [shortageNote, setShortageNote] = useState('');
 
   if (!selectedProject || !selectedVersion) return null;
 
@@ -47,18 +52,69 @@ const PickingOrders = () => {
   const handleStatusUpdate = async (id: string, status: string) => {
     try {
       const updates: Record<string, unknown> = { id, status };
-      if (status === 'Picked') {
-        const pick = picks.find(p => p.id === id);
-        updates.picked_qty = pick?.pick_qty ?? 0;
-        updates.picked_date_time = new Date().toISOString();
-      }
       if (status === 'Verified') {
         updates.verified_by = 'current.user@opspulse.io';
       }
       await updatePick.mutateAsync(updates as { id: string } & Record<string, unknown>);
+
+      // When verifying a pick with a shortage, auto-create an issue
+      if (status === 'Verified') {
+        const pick = picks.find(p => p.id === id);
+        if (pick && pick.picked_qty != null && pick.picked_qty < pick.pick_qty) {
+          const shortage = pick.pick_qty - pick.picked_qty;
+          await createIssue.mutateAsync({
+            project_id: selectedProject.id,
+            version_id: selectedVersion.id,
+            related_module: 'PickingOrder',
+            related_record_id: id,
+            issue_description: `Picking shortage: ${pick.part_number} — needed ${pick.pick_qty}, only ${pick.picked_qty} picked (${shortage} short).${pick.issue_note ? ` Note: ${pick.issue_note.replace(/^Short \d+ — /, '')}` : ''}`,
+            raised_by: 'current.user@opspulse.io',
+            priority: shortage >= 10 ? 'High' : 'Medium',
+            status: 'Open',
+          });
+          toast.warning(`Shortage issue created: ${shortage} unit(s) short on ${pick.part_number}`);
+          return;
+        }
+      }
+
       toast.success(`Status updated to ${status}`);
     } catch {
       toast.error('Failed to update status');
+    }
+  };
+
+  const openPickConfirm = (id: string) => {
+    const pick = picks.find(p => p.id === id);
+    if (!pick) return;
+    setPickConfirm({ id, part_number: pick.part_number, pick_qty: pick.pick_qty });
+    setPickedQtyInput(String(pick.pick_qty));
+    setShortageNote('');
+  };
+
+  const handlePickConfirm = async () => {
+    if (!pickConfirm) return;
+    const qty = Number(pickedQtyInput);
+    if (isNaN(qty) || qty < 0 || qty > pickConfirm.pick_qty) return;
+    const isShort = qty < pickConfirm.pick_qty;
+    if (isShort && !shortageNote.trim()) return;
+    try {
+      const shortage = pickConfirm.pick_qty - qty;
+      const note = isShort ? `Short ${shortage} — ${shortageNote.trim()}` : null;
+      await updatePick.mutateAsync({
+        id: pickConfirm.id,
+        status: 'Picked',
+        picked_qty: qty,
+        picked_date_time: new Date().toISOString(),
+        issue_note: note,
+      } as { id: string } & Record<string, unknown>);
+      if (isShort) {
+        toast.warning(`Partial pick: ${qty}/${pickConfirm.pick_qty} — shortage noted`);
+      } else {
+        toast.success('Picked in full');
+      }
+      setPickConfirm(null);
+    } catch {
+      toast.error('Failed to update pick');
     }
   };
 
@@ -158,7 +214,18 @@ const PickingOrders = () => {
                   <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.work_order_number ?? '—'}</td>
                   <td className="px-3 py-2.5 font-mono font-medium text-foreground">{pick.part_number}</td>
                   <td className="px-3 py-2.5 text-right font-mono text-foreground">{pick.pick_qty}</td>
-                  <td className="px-3 py-2.5 text-right font-mono text-muted-foreground">{pick.picked_qty ?? '—'}</td>
+                  <td className="px-3 py-2.5 text-right font-mono">
+                    {pick.picked_qty != null ? (
+                      <span className={cn(
+                        pick.picked_qty < pick.pick_qty ? "text-amber-500" : "text-muted-foreground"
+                      )}>
+                        {pick.picked_qty}
+                        {pick.picked_qty < pick.pick_qty && (
+                          <span className="ml-1 text-[9px]" title={pick.issue_note ?? 'Shortage'}>!</span>
+                        )}
+                      </span>
+                    ) : '—'}
+                  </td>
                   <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.bin_location ?? '—'}</td>
                   <td className="px-3 py-2.5 text-muted-foreground">{pick.assigned_picker ? pick.assigned_picker.split('@')[0] : '—'}</td>
                   <td className="px-3 py-2.5 text-center">
@@ -171,19 +238,18 @@ const PickingOrders = () => {
                     )}>{pick.status}</span>
                   </td>
                   <td className="px-3 py-2.5 text-center">
-                    <div className="flex items-center justify-center gap-1 flex-wrap">
+                    <div className="flex items-center justify-center gap-1.5 flex-wrap">
                       {pick.status === 'Pending' && (
-                        <button onClick={() => handleStatusUpdate(pick.id, 'In Progress')} className="text-[10px] font-medium text-foreground hover:underline">Start</button>
+                        <button onClick={() => handleStatusUpdate(pick.id, 'In Progress')} className="rounded bg-foreground/10 px-2.5 py-1 text-[10px] font-semibold text-foreground transition-colors hover:bg-foreground/20">Start</button>
                       )}
                       {pick.status === 'In Progress' && (
                         <>
-                          <button onClick={() => handleStatusUpdate(pick.id, 'Picked')} className="text-[10px] font-medium text-ops-green hover:underline">Picked</button>
-                          <span className="text-muted-foreground">·</span>
-                          <button onClick={() => handleFlagIssue(pick.id)} className="text-[10px] font-medium text-accent hover:underline">Issue</button>
+                          <button onClick={() => openPickConfirm(pick.id)} className="rounded bg-ops-green/15 px-2.5 py-1 text-[10px] font-semibold text-ops-green transition-colors hover:bg-ops-green/25">Picked</button>
+                          <button onClick={() => handleFlagIssue(pick.id)} className="rounded bg-accent/15 px-2.5 py-1 text-[10px] font-semibold text-accent transition-colors hover:bg-accent/25">Issue</button>
                         </>
                       )}
                       {pick.status === 'Picked' && (
-                        <button onClick={() => handleStatusUpdate(pick.id, 'Verified')} className="text-[10px] font-medium text-ops-green hover:underline">Verify</button>
+                        <button onClick={() => handleStatusUpdate(pick.id, 'Verified')} className="rounded bg-ops-green/15 px-2.5 py-1 text-[10px] font-semibold text-ops-green transition-colors hover:bg-ops-green/25">Verify</button>
                       )}
                     </div>
                   </td>
@@ -197,16 +263,79 @@ const PickingOrders = () => {
         </div>
       </motion.div>
 
-      {picks.some(p => p.status === 'Issue') && (
+      {picks.some(p => p.status === 'Issue' || (p.picked_qty != null && p.picked_qty < p.pick_qty)) && (
         <div className="space-y-1.5">
-          <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Issues</h3>
+          <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Issues & Shortages</h3>
           {picks.filter(p => p.status === 'Issue').map(p => (
             <div key={p.id} className="rounded border border-accent/15 bg-accent/5 p-2.5 text-xs text-foreground">
               <span className="font-mono text-muted-foreground">{p.id.slice(0, 8)}</span> · {p.part_number} at {p.bin_location ?? '—'} — {p.issue_note}
             </div>
           ))}
+          {picks.filter(p => p.status !== 'Issue' && p.picked_qty != null && p.picked_qty < p.pick_qty).map(p => (
+            <div key={p.id} className="rounded border border-amber-500/15 bg-amber-500/5 p-2.5 text-xs text-foreground flex items-start gap-2">
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />
+              <div>
+                <span className="font-mono text-muted-foreground">{p.id.slice(0, 8)}</span> · {p.part_number} — Needed {p.pick_qty}, picked {p.picked_qty}{p.issue_note ? ` — ${p.issue_note}` : ''}
+              </div>
+            </div>
+          ))}
         </div>
       )}
+
+      <Dialog open={!!pickConfirm} onOpenChange={open => { if (!open) setPickConfirm(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Pick</DialogTitle>
+            <DialogDescription>
+              Part <span className="font-mono font-semibold">{pickConfirm?.part_number}</span> — Requested qty: <span className="font-semibold">{pickConfirm?.pick_qty}</span>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 pt-2">
+            <div>
+              <Label>Qty Actually Picked *</Label>
+              <Input
+                type="number"
+                min="0"
+                max={pickConfirm?.pick_qty}
+                value={pickedQtyInput}
+                onChange={e => setPickedQtyInput(e.target.value)}
+                autoFocus
+              />
+            </div>
+            {pickConfirm && Number(pickedQtyInput) >= 0 && Number(pickedQtyInput) < pickConfirm.pick_qty && (
+              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-2">
+                <div className="rounded bg-amber-500/10 border border-amber-500/20 p-2.5 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-2">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  Shortage of {pickConfirm.pick_qty - Number(pickedQtyInput)} unit(s) — please provide a note.
+                </div>
+                <div>
+                  <Label>Shortage Note *</Label>
+                  <Textarea
+                    placeholder="e.g. Not in location, misplaced, damaged, only 2 available on shelf..."
+                    value={shortageNote}
+                    onChange={e => setShortageNote(e.target.value)}
+                    rows={2}
+                  />
+                </div>
+              </motion.div>
+            )}
+            <Button
+              onClick={handlePickConfirm}
+              disabled={
+                updatePick.isPending ||
+                !pickedQtyInput ||
+                Number(pickedQtyInput) < 0 ||
+                Number(pickedQtyInput) > (pickConfirm?.pick_qty ?? 0) ||
+                (Number(pickedQtyInput) < (pickConfirm?.pick_qty ?? 0) && !shortageNote.trim())
+              }
+              className="w-full"
+            >
+              {updatePick.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              {pickConfirm && Number(pickedQtyInput) < pickConfirm.pick_qty ? 'Confirm Partial Pick' : 'Confirm Pick'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
