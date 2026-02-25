@@ -2,7 +2,7 @@ import { useProject } from '@/contexts/ProjectContext';
 import { usePickingOrders, useCreatePickingOrder, useUpdatePickingOrder, useCreateIssue } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
-import { Truck, Plus, Loader2, AlertTriangle } from 'lucide-react';
+import { Truck, Plus, Loader2, AlertTriangle, ShoppingCart } from 'lucide-react';
 import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -60,7 +60,7 @@ const PickingOrders = () => {
       // When verifying a pick with a shortage, auto-create an issue
       if (status === 'Verified') {
         const pick = picks.find(p => p.id === id);
-        if (pick && pick.picked_qty != null && pick.picked_qty < pick.pick_qty) {
+        if (pick && pick.picked_qty && pick.picked_qty < pick.pick_qty) {
           const shortage = pick.pick_qty - pick.picked_qty;
           await createIssue.mutateAsync({
             project_id: selectedProject.id,
@@ -208,16 +208,16 @@ const PickingOrders = () => {
               </tr>
             </thead>
             <tbody>
-              {picks.map(pick => (
+              {picks.filter(p => !p.work_order_number?.startsWith('REQ-')).map(pick => (
                 <tr key={pick.id} className="data-table-row">
                   <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.id.slice(0, 8)}</td>
                   <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.work_order_number ?? '—'}</td>
                   <td className="px-3 py-2.5 font-mono font-medium text-foreground">{pick.part_number}</td>
                   <td className="px-3 py-2.5 text-right font-mono text-foreground">{pick.pick_qty}</td>
                   <td className="px-3 py-2.5 text-right font-mono">
-                    {pick.picked_qty != null ? (
+                    {pick.picked_qty ? (
                       <span className={cn(
-                        pick.picked_qty < pick.pick_qty ? "text-amber-500" : "text-muted-foreground"
+                        pick.picked_qty < pick.pick_qty ? "text-ops-amber" : "text-ops-green"
                       )}>
                         {pick.picked_qty}
                         {pick.picked_qty < pick.pick_qty && (
@@ -255,15 +255,77 @@ const PickingOrders = () => {
                   </td>
                 </tr>
               ))}
-              {picks.length === 0 && (
+              {picks.filter(p => !p.work_order_number?.startsWith('REQ-')).length === 0 && (
                 <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">No picking orders</td></tr>
+              )}
+              {picks.some(p => p.work_order_number?.startsWith('REQ-')) && (
+                <>
+                  <tr>
+                    <td colSpan={9} className="bg-muted/40 px-3 py-2 border-y border-border">
+                      <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        <ShoppingCart className="h-3 w-3" /> Part Request Picks
+                      </span>
+                    </td>
+                  </tr>
+                  {picks.filter(p => p.work_order_number?.startsWith('REQ-')).map(pick => (
+                    <tr key={pick.id} className="data-table-row">
+                      <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.id.slice(0, 8)}</td>
+                      <td className="px-3 py-2.5 font-mono">
+                        <span className="inline-flex items-center rounded border border-ops-amber/30 px-1.5 py-0.5 text-[10px] font-mono font-medium text-ops-amber">
+                          {pick.work_order_number}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 font-mono font-medium text-foreground">{pick.part_number}</td>
+                      <td className="px-3 py-2.5 text-right font-mono text-foreground">{pick.pick_qty}</td>
+                      <td className="px-3 py-2.5 text-right font-mono">
+                        {pick.picked_qty != null ? (
+                          <span className={cn(
+                            pick.picked_qty < pick.pick_qty ? "text-ops-amber" : "text-ops-green"
+                          )}>
+                            {pick.picked_qty}
+                            {pick.picked_qty < pick.pick_qty && (
+                              <span className="ml-1 text-[9px]" title={pick.issue_note ?? 'Shortage'}>!</span>
+                            )}
+                          </span>
+                        ) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.bin_location ?? '—'}</td>
+                      <td className="px-3 py-2.5 text-muted-foreground">{pick.assigned_picker ? pick.assigned_picker.split('@')[0] : '—'}</td>
+                      <td className="px-3 py-2.5 text-center">
+                        <span className={cn("text-[10px] font-semibold uppercase tracking-wider",
+                          pick.status === 'Verified' && "text-ops-green",
+                          pick.status === 'Picked' && "text-ops-green",
+                          pick.status === 'In Progress' && "text-foreground",
+                          pick.status === 'Pending' && "text-muted-foreground",
+                          pick.status === 'Issue' && "text-accent",
+                        )}>{pick.status}</span>
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                          {pick.status === 'Pending' && (
+                            <button onClick={() => handleStatusUpdate(pick.id, 'In Progress')} className="rounded bg-foreground/10 px-2.5 py-1 text-[10px] font-semibold text-foreground transition-colors hover:bg-foreground/20">Start</button>
+                          )}
+                          {pick.status === 'In Progress' && (
+                            <>
+                              <button onClick={() => openPickConfirm(pick.id)} className="rounded bg-ops-green/15 px-2.5 py-1 text-[10px] font-semibold text-ops-green transition-colors hover:bg-ops-green/25">Picked</button>
+                              <button onClick={() => handleFlagIssue(pick.id)} className="rounded bg-accent/15 px-2.5 py-1 text-[10px] font-semibold text-accent transition-colors hover:bg-accent/25">Issue</button>
+                            </>
+                          )}
+                          {pick.status === 'Picked' && (
+                            <button onClick={() => handleStatusUpdate(pick.id, 'Verified')} className="rounded bg-ops-green/15 px-2.5 py-1 text-[10px] font-semibold text-ops-green transition-colors hover:bg-ops-green/25">Verify</button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </>
               )}
             </tbody>
           </table>
         </div>
       </motion.div>
 
-      {picks.some(p => p.status === 'Issue' || (p.picked_qty != null && p.picked_qty < p.pick_qty)) && (
+      {picks.some(p => p.status === 'Issue' || (p.picked_qty && p.picked_qty < p.pick_qty)) && (
         <div className="space-y-1.5">
           <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Issues & Shortages</h3>
           {picks.filter(p => p.status === 'Issue').map(p => (
@@ -271,7 +333,7 @@ const PickingOrders = () => {
               <span className="font-mono text-muted-foreground">{p.id.slice(0, 8)}</span> · {p.part_number} at {p.bin_location ?? '—'} — {p.issue_note}
             </div>
           ))}
-          {picks.filter(p => p.status !== 'Issue' && p.picked_qty != null && p.picked_qty < p.pick_qty).map(p => (
+          {picks.filter(p => p.status !== 'Issue' && p.picked_qty && p.picked_qty < p.pick_qty).map(p => (
             <div key={p.id} className="rounded border border-amber-500/15 bg-amber-500/5 p-2.5 text-xs text-foreground flex items-start gap-2">
               <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />
               <div>
