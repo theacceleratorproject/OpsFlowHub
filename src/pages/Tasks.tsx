@@ -251,14 +251,10 @@ const ParentStep = ({
 
 const TaskCard = ({
   task,
-  expandedTaskId,
-  onToggleExpand,
 }: {
   task: TaskRow;
-  expandedTaskId: string | null;
-  onToggleExpand: (id: string) => void;
 }) => {
-  const isExpanded = expandedTaskId === task.id;
+  const [isExpanded, setIsExpanded] = useState(false);
   const { data: steps = [] } = useTaskSteps(isExpanded ? task.id : undefined);
   const updateStep = useUpdateTaskStep();
   const updateSteps = useUpdateTaskSteps();
@@ -528,7 +524,7 @@ const TaskCard = ({
       <h4 className="text-sm font-medium text-foreground mb-2">{task.task_name}</h4>
 
       <button
-        onClick={() => onToggleExpand(task.id)}
+        onClick={() => setIsExpanded(prev => !prev)}
         className="w-full text-left mb-2 cursor-pointer group"
       >
         <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
@@ -2409,7 +2405,6 @@ const Tasks = () => {
   const createTask = useCreateTask();
   const createSteps = useCreateTaskSteps();
 
-  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('cards');
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -2418,10 +2413,6 @@ const Tasks = () => {
   const [newTask, setNewTask] = useState({
     task_name: '', phase: 'MP', assigned_to: '', start_date: '', due_date: '', priority: 'Medium', notes: '',
   });
-
-  const toggleExpand = useCallback((taskId: string) => {
-    setExpandedTaskId(prev => prev === taskId ? null : taskId);
-  }, []);
 
   const handleCreateTask = async () => {
     if (!selectedProject || !selectedVersion || !newTask.task_name.trim()) return;
@@ -2588,13 +2579,11 @@ const Tasks = () => {
                 animate={{ opacity: 1, y: 0 }}
               >
                 <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">{phaseLabels[phase] ?? phase}</h3>
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 items-start">
                   {phaseTasks.map(task => (
                     <TaskCard
                       key={task.id}
                       task={task}
-                      expandedTaskId={expandedTaskId}
-                      onToggleExpand={toggleExpand}
                     />
                   ))}
                 </div>
@@ -2605,9 +2594,9 @@ const Tasks = () => {
           {tasks.filter(t => !t.phase || !phaseOrder.includes(t.phase as typeof phaseOrder[number])).length > 0 && (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
               <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Unassigned Phase</h3>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 items-start">
                 {tasks.filter(t => !t.phase || !phaseOrder.includes(t.phase as typeof phaseOrder[number])).map(task => (
-                  <TaskCard key={task.id} task={task} expandedTaskId={expandedTaskId} onToggleExpand={toggleExpand} />
+                  <TaskCard key={task.id} task={task} />
                 ))}
               </div>
             </motion.div>
