@@ -1,5 +1,6 @@
 import { useProject } from '@/contexts/ProjectContext';
-import { usePartRequests, useCreatePartRequest, useUpdatePartRequest } from '@/hooks/use-supabase-data';
+import { usePartRequests, useCreatePartRequest, useUpdatePartRequest, useCreatePickingOrder, useCreateIssue } from '@/hooks/use-supabase-data';
+import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import { ShoppingCart, Plus, Loader2 } from 'lucide-react';
@@ -14,8 +15,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 
@@ -27,9 +31,14 @@ const PartRequests = () => {
   const { data: requests = [], isLoading } = usePartRequests(versionId);
   const createRequest = useCreatePartRequest();
   const updateRequest = useUpdatePartRequest();
+  const createPickingOrder = useCreatePickingOrder();
+  const createIssue = useCreateIssue();
+  const queryClient = useQueryClient();
 
   const [showForm, setShowForm] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [rejectTarget, setRejectTarget] = useState<{ id: string; part_number: string } | null>(null);
+  const [rejectionReason, setRejectionReason] = useState('');
 
   // Form state
   const [partNumber, setPartNumber] = useState('');
@@ -79,20 +88,52 @@ const PartRequests = () => {
   };
 
   const handleApprove = async (id: string) => {
+    const request = requests.find(r => r.id === id);
+    if (!request) return;
     try {
       await updateRequest.mutateAsync({ id, status: 'Approved', approved_by: 'current.user@opspulse.io', approval_date: new Date().toISOString() });
-      toast.success('Request approved');
+      await createPickingOrder.mutateAsync({
+        project_id: selectedProject.id,
+        version_id: selectedVersion.id,
+        work_order_number: `REQ-${id.slice(0, 8)}`,
+        part_number: request.part_number,
+        pick_qty: request.requested_qty,
+      });
+      queryClient.invalidateQueries({ queryKey: ['picking_orders', selectedVersion.id] });
+      toast.success('Request approved — picking order created');
     } catch {
       toast.error('Failed to approve request');
     }
   };
 
-  const handleReject = async (id: string) => {
-    const reason = window.prompt('Rejection reason:');
-    if (!reason) return;
+  const openRejectDialog = (id: string) => {
+    const request = requests.find(r => r.id === id);
+    if (!request) return;
+    setRejectTarget({ id, part_number: request.part_number });
+    setRejectionReason('');
+  };
+
+  const handleConfirmReject = async () => {
+    if (!rejectTarget || !rejectionReason.trim()) return;
     try {
-      await updateRequest.mutateAsync({ id, status: 'Rejected', rejection_reason: reason });
-      toast.success('Request rejected');
+      await updateRequest.mutateAsync({
+        id: rejectTarget.id,
+        status: 'Rejected',
+        rejection_reason: rejectionReason.trim(),
+      });
+      await createIssue.mutateAsync({
+        project_id: selectedProject.id,
+        version_id: selectedVersion.id,
+        related_module: 'PartRequest',
+        related_record_id: rejectTarget.id,
+        issue_description: `Part request rejected: ${rejectTarget.part_number} — ${rejectionReason.trim()}`,
+        raised_by: 'current.user@opspulse.io',
+        priority: 'Medium',
+        status: 'Open',
+      });
+      queryClient.invalidateQueries({ queryKey: ['issues', selectedVersion.id] });
+      toast.success('Request rejected — issue created');
+      setRejectTarget(null);
     } catch {
       toast.error('Failed to reject request');
     }
@@ -244,10 +285,17 @@ const PartRequests = () => {
                   <td className="px-3 py-2.5 text-muted-foreground">{req.requested_by ? req.requested_by.split('@')[0] : '—'}</td>
                   <td className="px-3 py-2.5 text-center">
                     {req.status === 'Pending' && (
-                      <div className="flex items-center justify-center gap-1">
-                        <button onClick={() => handleApprove(req.id)} className="text-[10px] font-medium text-ops-green hover:underline">Approve</button>
-                        <span className="text-muted-foreground">·</span>
-                        <button onClick={() => handleReject(req.id)} className="text-[10px] font-medium text-accent hover:underline">Reject</button>
+                      <div className="flex items-center justify-center gap-1.5">
+                        <button
+                          onClick={() => handleApprove(req.id)}
+                          disabled={updateRequest.isPending || createPickingOrder.isPending}
+                          className="rounded bg-ops-green/15 px-2.5 py-1 text-[10px] font-semibold text-ops-green transition-colors hover:bg-ops-green/25 disabled:opacity-50"
+                        >Approve</button>
+                        <button
+                          onClick={() => openRejectDialog(req.id)}
+                          disabled={updateRequest.isPending || createIssue.isPending}
+                          className="rounded bg-accent/15 px-2.5 py-1 text-[10px] font-semibold text-accent transition-colors hover:bg-accent/25 disabled:opacity-50"
+                        >Reject</button>
                       </div>
                     )}
                   </td>
@@ -271,6 +319,38 @@ const PartRequests = () => {
           ))}
         </div>
       )}
+
+      <Dialog open={!!rejectTarget} onOpenChange={open => { if (!open) setRejectTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject Part Request</DialogTitle>
+            <DialogDescription>
+              Rejecting <span className="font-mono font-semibold">{rejectTarget?.part_number}</span>. An issue will be created automatically.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 pt-2">
+            <div>
+              <Label className="text-xs text-muted-foreground">Rejection Reason *</Label>
+              <Textarea
+                placeholder="e.g. Part discontinued, incorrect specification, budget constraints..."
+                value={rejectionReason}
+                onChange={e => setRejectionReason(e.target.value)}
+                rows={3}
+                autoFocus
+              />
+            </div>
+            <Button
+              onClick={handleConfirmReject}
+              disabled={!rejectionReason.trim() || updateRequest.isPending || createIssue.isPending}
+              variant="destructive"
+              className="w-full"
+            >
+              {(updateRequest.isPending || createIssue.isPending) ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Reject & Create Issue
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
