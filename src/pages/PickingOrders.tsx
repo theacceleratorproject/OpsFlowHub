@@ -1,8 +1,9 @@
 import { useProject } from '@/contexts/ProjectContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { usePickingOrders, useCreatePickingOrder, useUpdatePickingOrder, useCreateIssue } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
-import { Truck, Plus, Loader2, AlertTriangle, ShoppingCart } from 'lucide-react';
+import { Truck, Plus, Loader2, AlertTriangle, ShoppingCart, Filter } from 'lucide-react';
 import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -13,6 +14,8 @@ import { toast } from 'sonner';
 
 const PickingOrders = () => {
   const { selectedProject, selectedVersion } = useProject();
+  const { user } = useAuth();
+  const userEmail = user?.email ?? '';
   const versionId = selectedVersion?.id;
   const { data: picks = [], isLoading } = usePickingOrders(versionId);
   const createPick = useCreatePickingOrder();
@@ -26,6 +29,7 @@ const PickingOrders = () => {
   const [pickConfirm, setPickConfirm] = useState<{ id: string; part_number: string; pick_qty: number } | null>(null);
   const [pickedQtyInput, setPickedQtyInput] = useState('');
   const [shortageNote, setShortageNote] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('All');
 
   if (!selectedProject || !selectedVersion) return null;
 
@@ -53,7 +57,7 @@ const PickingOrders = () => {
     try {
       const updates: Record<string, unknown> = { id, status };
       if (status === 'Verified') {
-        updates.verified_by = 'current.user@opspulse.io';
+        updates.verified_by = userEmail;
       }
       await updatePick.mutateAsync(updates as { id: string } & Record<string, unknown>);
 
@@ -68,7 +72,7 @@ const PickingOrders = () => {
             related_module: 'PickingOrder',
             related_record_id: id,
             issue_description: `Picking shortage: ${pick.part_number} — needed ${pick.pick_qty}, only ${pick.picked_qty} picked (${shortage} short).${pick.issue_note ? ` Note: ${pick.issue_note.replace(/^Short \d+ — /, '')}` : ''}`,
-            raised_by: 'current.user@opspulse.io',
+            raised_by: userEmail,
             priority: shortage >= 10 ? 'High' : 'Medium',
             status: 'Open',
           });
@@ -122,8 +126,19 @@ const PickingOrders = () => {
     const note = window.prompt('Issue note:');
     if (!note) return;
     try {
+      const pick = picks.find(p => p.id === id);
       await updatePick.mutateAsync({ id, status: 'Issue', issue_note: note });
-      toast.success('Issue flagged');
+      await createIssue.mutateAsync({
+        project_id: selectedProject.id,
+        version_id: selectedVersion.id,
+        related_module: 'PickingOrder',
+        related_record_id: id,
+        issue_description: `Picking issue: ${pick?.part_number ?? 'Unknown part'} at ${pick?.bin_location ?? 'N/A'} — ${note}`,
+        raised_by: userEmail,
+        priority: 'Medium',
+        status: 'Open',
+      });
+      toast.success('Issue flagged and created in Issues');
     } catch {
       toast.error('Failed to flag issue');
     }
@@ -137,6 +152,13 @@ const PickingOrders = () => {
     );
   }
 
+  const STATUSES = ['All', 'Pending', 'In Progress', 'Picked', 'Verified', 'Issue'] as const;
+  const statusCounts = STATUSES.reduce((acc, s) => {
+    acc[s] = s === 'All' ? picks.length : picks.filter(p => p.status === s).length;
+    return acc;
+  }, {} as Record<string, number>);
+  const filteredPicks = statusFilter === 'All' ? picks : picks.filter(p => p.status === statusFilter);
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -144,7 +166,7 @@ const PickingOrders = () => {
           <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
             <Truck className="h-4 w-4 text-muted-foreground" /> Picking Orders
           </h2>
-          <p className="text-xs text-muted-foreground">{picks.length} orders</p>
+          <p className="text-xs text-muted-foreground">{filteredPicks.length} of {picks.length} orders</p>
         </div>
         <Dialog open={showCreate} onOpenChange={setShowCreate}>
           <DialogTrigger asChild>
@@ -191,6 +213,30 @@ const PickingOrders = () => {
         </Dialog>
       </div>
 
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+        {STATUSES.map(s => (
+          <button
+            key={s}
+            onClick={() => setStatusFilter(s)}
+            className={cn(
+              "rounded-full px-2.5 py-1 text-[10px] font-semibold tracking-wide transition-colors",
+              statusFilter === s
+                ? "bg-foreground text-background"
+                : "bg-muted text-muted-foreground hover:bg-muted/80"
+            )}
+          >
+            {s}
+            <span className={cn(
+              "ml-1 text-[9px]",
+              statusFilter === s ? "text-background/70" : "text-muted-foreground/60"
+            )}>
+              {statusCounts[s]}
+            </span>
+          </button>
+        ))}
+      </div>
+
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="rounded-md border border-border bg-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -208,7 +254,7 @@ const PickingOrders = () => {
               </tr>
             </thead>
             <tbody>
-              {picks.filter(p => !p.work_order_number?.startsWith('REQ-')).map(pick => (
+              {filteredPicks.filter(p => !p.work_order_number?.startsWith('REQ-')).map(pick => (
                 <tr key={pick.id} className="data-table-row">
                   <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.id.slice(0, 8)}</td>
                   <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.work_order_number ?? '—'}</td>
@@ -255,10 +301,10 @@ const PickingOrders = () => {
                   </td>
                 </tr>
               ))}
-              {picks.filter(p => !p.work_order_number?.startsWith('REQ-')).length === 0 && (
-                <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">No picking orders</td></tr>
+              {filteredPicks.filter(p => !p.work_order_number?.startsWith('REQ-')).length === 0 && (
+                <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">{statusFilter === 'All' ? 'No picking orders' : `No ${statusFilter.toLowerCase()} picking orders`}</td></tr>
               )}
-              {picks.some(p => p.work_order_number?.startsWith('REQ-')) && (
+              {filteredPicks.some(p => p.work_order_number?.startsWith('REQ-')) && (
                 <>
                   <tr>
                     <td colSpan={9} className="bg-muted/40 px-3 py-2 border-y border-border">
@@ -267,7 +313,7 @@ const PickingOrders = () => {
                       </span>
                     </td>
                   </tr>
-                  {picks.filter(p => p.work_order_number?.startsWith('REQ-')).map(pick => (
+                  {filteredPicks.filter(p => p.work_order_number?.startsWith('REQ-')).map(pick => (
                     <tr key={pick.id} className="data-table-row">
                       <td className="px-3 py-2.5 font-mono text-muted-foreground">{pick.id.slice(0, 8)}</td>
                       <td className="px-3 py-2.5 font-mono">

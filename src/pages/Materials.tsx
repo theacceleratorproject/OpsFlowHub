@@ -338,6 +338,8 @@ const Materials = () => {
     }
   }, [updateWO, createPickingOrders, inventoryByPart]);
 
+  if (!selectedProject || !selectedVersion) return null;
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">

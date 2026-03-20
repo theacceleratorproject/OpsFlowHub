@@ -15,6 +15,9 @@ export type PickingOrderRow = Tables<'picking_orders'>;
 export type IssueRow = Tables<'issues'>;
 export type WorkOrderRow = Tables<'work_orders'>;
 export type WorkOrderLineRow = Tables<'work_order_lines'>;
+export type GateReviewRow = Tables<'gate_reviews'>;
+export type GateCriterionRow = Tables<'gate_criteria'>;
+export type EcnNoticeRow = Tables<'ecn_notices'>;
 
 // ── Existing hooks (BOM / Suppliers / Inventory) ──────────────────
 
@@ -560,6 +563,301 @@ export const useCreateWorkOrderLines = () => {
       if (variables.length > 0) {
         qc.invalidateQueries({ queryKey: ['work_order_lines', variables[0].work_order_id] });
       }
+    },
+  });
+};
+
+// ── Shortage Alerts ──────────────────────────────────────────────
+
+export interface AffectedWorkOrder {
+  id: string;
+  work_order_number: string;
+  created_at: string;
+  status: string;
+}
+
+export interface ShortageAlert {
+  part_number: string;
+  part_name: string;
+  on_hand: number;
+  required: number;
+  shortfall: number;
+  affected_work_orders: AffectedWorkOrder[];
+  supplier_name: string | null;
+  lead_time_days: number | null;
+}
+
+export const useShortageAlerts = (projectVersionId?: string) =>
+  useQuery({
+    queryKey: ['shortage_alerts', projectVersionId],
+    enabled: !!projectVersionId,
+    queryFn: async () => {
+      // Parallel fetch BOM, inventory, work_order_lines→work_orders, suppliers
+      const [bomRes, invRes, wolRes, supRes] = await Promise.all([
+        supabase
+          .from('bom_lines')
+          .select('component_number, object_description, required_qty, bom_level')
+          .eq('project_version_id', projectVersionId!),
+        supabase
+          .from('inventory')
+          .select('part_number, on_hand_qty')
+          .eq('project_version_id', projectVersionId!),
+        supabase
+          .from('work_order_lines')
+          .select('part_number, work_orders!inner(id, work_order_number, status, created_at, version_id)')
+          .eq('work_orders.version_id', projectVersionId!),
+        supabase
+          .from('suppliers')
+          .select('part_number, supplier_name, lead_time_days'),
+      ]);
+
+      if (bomRes.error) throw bomRes.error;
+      if (invRes.error) throw invRes.error;
+      if (wolRes.error) throw wolRes.error;
+      if (supRes.error) throw supRes.error;
+
+      const bom = bomRes.data ?? [];
+      const inv = invRes.data ?? [];
+      const wol = (wolRes.data ?? []) as unknown as {
+        part_number: string;
+        work_orders: { id: string; work_order_number: string; status: string; created_at: string };
+      }[];
+      const sup = supRes.data ?? [];
+
+      // Aggregate inventory by part_number
+      const invMap = new Map<string, number>();
+      inv.forEach(i => {
+        invMap.set(i.part_number, (invMap.get(i.part_number) ?? 0) + (i.on_hand_qty ?? 0));
+      });
+
+      // Aggregate BOM: deduplicate by component_number, sum required_qty, capture description
+      const bomMap = new Map<string, { required: number; name: string }>();
+      bom.forEach(l => {
+        if (l.bom_level === 0) return; // skip top-level assembly row
+        const existing = bomMap.get(l.component_number);
+        if (existing) {
+          existing.required += Number(l.required_qty);
+        } else {
+          bomMap.set(l.component_number, {
+            required: Number(l.required_qty),
+            name: l.object_description ?? l.component_number,
+          });
+        }
+      });
+
+      // Map part_number → work orders that include it
+      const woByPart = new Map<string, Map<string, AffectedWorkOrder>>();
+      wol.forEach(line => {
+        const wo = line.work_orders;
+        if (!woByPart.has(line.part_number)) woByPart.set(line.part_number, new Map());
+        const map = woByPart.get(line.part_number)!;
+        if (!map.has(wo.id)) {
+          map.set(wo.id, {
+            id: wo.id,
+            work_order_number: wo.work_order_number,
+            created_at: wo.created_at,
+            status: wo.status,
+          });
+        }
+      });
+
+      // Best supplier per part (shortest lead time)
+      const supMap = new Map<string, { supplier_name: string; lead_time_days: number | null }>();
+      sup.forEach(s => {
+        const existing = supMap.get(s.part_number);
+        if (!existing || (s.lead_time_days ?? Infinity) < (existing.lead_time_days ?? Infinity)) {
+          supMap.set(s.part_number, { supplier_name: s.supplier_name, lead_time_days: s.lead_time_days });
+        }
+      });
+
+      // Build shortage alerts
+      const alerts: ShortageAlert[] = [];
+      bomMap.forEach(({ required, name }, partNumber) => {
+        const onHand = invMap.get(partNumber) ?? 0;
+        if (onHand >= required) return; // no shortage
+
+        const shortfall = required - onHand;
+        const affectedWOs = woByPart.get(partNumber);
+        const supplier = supMap.get(partNumber);
+
+        alerts.push({
+          part_number: partNumber,
+          part_name: name,
+          on_hand: onHand,
+          required,
+          shortfall,
+          affected_work_orders: affectedWOs ? Array.from(affectedWOs.values()) : [],
+          supplier_name: supplier?.supplier_name ?? null,
+          lead_time_days: supplier?.lead_time_days ?? null,
+        });
+      });
+
+      // Sort: largest shortfall first, then by nearest work order date
+      alerts.sort((a, b) => {
+        if (b.shortfall !== a.shortfall) return b.shortfall - a.shortfall;
+        const aDate = a.affected_work_orders[0]?.created_at ?? '';
+        const bDate = b.affected_work_orders[0]?.created_at ?? '';
+        return aDate.localeCompare(bDate);
+      });
+
+      return alerts;
+    },
+  });
+
+// ── Gate Reviews ─────────────────────────────────────────────────
+
+export type GateReviewWithCriteria = GateReviewRow & { gate_criteria: GateCriterionRow[] };
+
+export const useGateReviews = (projectVersionId?: string) =>
+  useQuery({
+    queryKey: ['gate_reviews', projectVersionId],
+    enabled: !!projectVersionId,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('gate_reviews')
+        .select('*, gate_criteria(*)')
+        .eq('project_version_id', projectVersionId!)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      return (data ?? []) as unknown as GateReviewWithCriteria[];
+    },
+  });
+
+export const useUpdateGateCriterion = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...updates }: TablesUpdate<'gate_criteria'> & { id: string }) => {
+      const { data, error } = await supabase.from('gate_criteria').update(updates).eq('id', id).select().single();
+      if (error) throw error;
+      return data as GateCriterionRow;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['gate_reviews'] });
+      qc.invalidateQueries({ queryKey: ['gate_readiness_summary'] });
+    },
+  });
+};
+
+// ── Gate Readiness Summary ───────────────────────────────────────
+
+export interface GateReadinessSummary {
+  criticalIssues: number;
+  totalOpenIssues: number;
+  bomLinesLocked: number;
+  partsAvailable: number;
+  totalParts: number;
+  pendingSignoffs: number;
+  totalCriteria: number;
+}
+
+export const useGateReadinessSummary = (projectVersionId?: string) =>
+  useQuery({
+    queryKey: ['gate_readiness_summary', projectVersionId],
+    enabled: !!projectVersionId,
+    queryFn: async () => {
+      // Parallel fetch all data sources
+      const [issuesRes, bomRes, invRes, reviewRes] = await Promise.all([
+        supabase
+          .from('issues')
+          .select('priority, status')
+          .eq('version_id', projectVersionId!),
+        supabase
+          .from('bom_lines')
+          .select('component_number, required_qty, bom_level')
+          .eq('project_version_id', projectVersionId!),
+        supabase
+          .from('inventory')
+          .select('part_number, on_hand_qty')
+          .eq('project_version_id', projectVersionId!),
+        supabase
+          .from('gate_reviews')
+          .select('id')
+          .eq('project_version_id', projectVersionId!)
+          .limit(1)
+          .maybeSingle(),
+      ]);
+
+      // Get criteria count if a review exists
+      let pendingSignoffs = 0;
+      let totalCriteria = 0;
+      if (reviewRes.data?.id) {
+        const { data: criteria } = await supabase
+          .from('gate_criteria')
+          .select('is_met')
+          .eq('gate_review_id', reviewRes.data.id);
+        totalCriteria = criteria?.length ?? 0;
+        pendingSignoffs = criteria?.filter(c => !c.is_met).length ?? 0;
+      }
+
+      const issues = issuesRes.data ?? [];
+      const bom = bomRes.data ?? [];
+      const inv = invRes.data ?? [];
+
+      // Critical issues: Critical priority + open status
+      const criticalIssues = issues.filter(
+        i => i.priority === 'Critical' && (i.status === 'Open' || i.status === 'In Progress'),
+      ).length;
+      const totalOpenIssues = issues.filter(
+        i => i.status === 'Open' || i.status === 'In Progress',
+      ).length;
+
+      // BOM lines locked: total count of BOM lines for this version
+      const bomLinesLocked = bom.length;
+
+      // Parts available: BOM parts (level > 0, deduplicated) with on_hand_qty > 0
+      const invMap = new Map<string, number>();
+      inv.forEach(i => invMap.set(i.part_number, (invMap.get(i.part_number) ?? 0) + (i.on_hand_qty ?? 0)));
+      const seen = new Set<string>();
+      let partsAvailable = 0;
+      let totalParts = 0;
+      bom.forEach(l => {
+        if (l.bom_level === 0 || seen.has(l.component_number)) return;
+        seen.add(l.component_number);
+        totalParts++;
+        if ((invMap.get(l.component_number) ?? 0) > 0) partsAvailable++;
+      });
+
+      return {
+        criticalIssues,
+        totalOpenIssues,
+        bomLinesLocked,
+        partsAvailable,
+        totalParts,
+        pendingSignoffs,
+        totalCriteria,
+      } satisfies GateReadinessSummary;
+    },
+  });
+
+// ── ECN Notices ──────────────────────────────────────────────────
+
+export const useECNs = (projectVersionId?: string) =>
+  useQuery({
+    queryKey: ['ecn_notices', projectVersionId],
+    queryFn: async () => {
+      let query = supabase
+        .from('ecn_notices')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (projectVersionId) {
+        query = query.eq('project_version_id', projectVersionId);
+      }
+      const { data, error } = await query;
+      if (error) throw error;
+      return data as EcnNoticeRow[];
+    },
+  });
+
+export const useCreateECN = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ecn: TablesInsert<'ecn_notices'>) => {
+      const { data, error } = await supabase.from('ecn_notices').insert(ecn).select().single();
+      if (error) throw error;
+      return data as EcnNoticeRow;
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['ecn_notices', data.project_version_id] });
     },
   });
 };

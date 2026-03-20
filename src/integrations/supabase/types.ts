@@ -53,6 +53,7 @@ export type Database = {
           usage_probability: number | null
           valid_from: string | null
           valid_to: string | null
+          created_by: string | null
         }
         Insert: {
           alt_item_group?: string | null
@@ -92,6 +93,7 @@ export type Database = {
           usage_probability?: number | null
           valid_from?: string | null
           valid_to?: string | null
+          created_by?: string | null
         }
         Update: {
           alt_item_group?: string | null
@@ -131,6 +133,7 @@ export type Database = {
           usage_probability?: number | null
           valid_from?: string | null
           valid_to?: string | null
+          created_by?: string | null
         }
         Relationships: []
       }
@@ -145,6 +148,7 @@ export type Database = {
           part_number: string
           project_version_id: string | null
           updated_by: string | null
+          created_by: string | null
         }
         Insert: {
           bin_location?: string | null
@@ -156,6 +160,7 @@ export type Database = {
           part_number: string
           project_version_id?: string | null
           updated_by?: string | null
+          created_by?: string | null
         }
         Update: {
           bin_location?: string | null
@@ -167,6 +172,7 @@ export type Database = {
           part_number?: string
           project_version_id?: string | null
           updated_by?: string | null
+          created_by?: string | null
         }
         Relationships: []
       }
@@ -182,6 +188,7 @@ export type Database = {
           supplier_name: string
           supplier_pn: string | null
           unit_cost: number | null
+          created_by: string | null
         }
         Insert: {
           alt_supplier_name?: string | null
@@ -194,6 +201,7 @@ export type Database = {
           supplier_name: string
           supplier_pn?: string | null
           unit_cost?: number | null
+          created_by?: string | null
         }
         Update: {
           alt_supplier_name?: string | null
@@ -206,6 +214,7 @@ export type Database = {
           supplier_name?: string
           supplier_pn?: string | null
           unit_cost?: number | null
+          created_by?: string | null
         }
         Relationships: []
       }
@@ -215,18 +224,21 @@ export type Database = {
           id: string
           upload_batch_id: string
           uploaded_at: string
+          created_by: string | null
         }
         Insert: {
           created_at?: string
           id?: string
           upload_batch_id: string
           uploaded_at?: string
+          created_by?: string | null
         }
         Update: {
           created_at?: string
           id?: string
           upload_batch_id?: string
           uploaded_at?: string
+          created_by?: string | null
         }
         Relationships: []
       }
@@ -240,6 +252,7 @@ export type Database = {
           mode: string
           status: string
           notes: string | null
+          created_by: string | null
           created_at: string
         }
         Insert: {
@@ -251,6 +264,7 @@ export type Database = {
           mode?: string
           status?: string
           notes?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Update: {
@@ -262,6 +276,7 @@ export type Database = {
           mode?: string
           status?: string
           notes?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Relationships: [
@@ -296,6 +311,7 @@ export type Database = {
           description: string | null
           required_qty: number
           unit_of_measure: string | null
+          created_by: string | null
           created_at: string
         }
         Insert: {
@@ -305,6 +321,7 @@ export type Database = {
           description?: string | null
           required_qty?: number
           unit_of_measure?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Update: {
@@ -314,6 +331,7 @@ export type Database = {
           description?: string | null
           required_qty?: number
           unit_of_measure?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Relationships: [
@@ -322,6 +340,94 @@ export type Database = {
             columns: ["work_order_id"]
             isOneToOne: false
             referencedRelation: "work_orders"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      gate_reviews: {
+        Row: {
+          id: string
+          project_version_id: string
+          gate_name: Database["public"]["Enums"]["gate_name"]
+          status: Database["public"]["Enums"]["gate_status"]
+          target_date: string | null
+          actual_date: string | null
+          readiness_score: number | null
+          notes: string | null
+          created_by: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          project_version_id: string
+          gate_name: Database["public"]["Enums"]["gate_name"]
+          status?: Database["public"]["Enums"]["gate_status"]
+          target_date?: string | null
+          actual_date?: string | null
+          readiness_score?: number | null
+          notes?: string | null
+          created_by?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          project_version_id?: string
+          gate_name?: Database["public"]["Enums"]["gate_name"]
+          status?: Database["public"]["Enums"]["gate_status"]
+          target_date?: string | null
+          actual_date?: string | null
+          readiness_score?: number | null
+          notes?: string | null
+          created_by?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "gate_reviews_project_version_id_fkey"
+            columns: ["project_version_id"]
+            isOneToOne: false
+            referencedRelation: "project_versions"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      gate_criteria: {
+        Row: {
+          id: string
+          gate_review_id: string
+          category: string
+          criterion: string
+          is_met: boolean
+          owner: string | null
+          created_by: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          gate_review_id: string
+          category: string
+          criterion: string
+          is_met?: boolean
+          owner?: string | null
+          created_by?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          gate_review_id?: string
+          category?: string
+          criterion?: string
+          is_met?: boolean
+          owner?: string | null
+          created_by?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "gate_criteria_gate_review_id_fkey"
+            columns: ["gate_review_id"]
+            isOneToOne: false
+            referencedRelation: "gate_reviews"
             referencedColumns: ["id"]
           }
         ]
@@ -336,6 +442,7 @@ export type Database = {
           project_lead: string | null
           status: string
           notes: string | null
+          created_by: string | null
           created_at: string
         }
         Insert: {
@@ -347,6 +454,7 @@ export type Database = {
           project_lead?: string | null
           status?: string
           notes?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Update: {
@@ -358,6 +466,7 @@ export type Database = {
           project_lead?: string | null
           status?: string
           notes?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Relationships: []
@@ -367,18 +476,21 @@ export type Database = {
           id: string
           project_id: string
           version_name: string
+          created_by: string | null
           created_at: string
         }
         Insert: {
           id?: string
           project_id: string
           version_name: string
+          created_by?: string | null
           created_at?: string
         }
         Update: {
           id?: string
           project_id?: string
           version_name?: string
+          created_by?: string | null
           created_at?: string
         }
         Relationships: [
@@ -406,6 +518,7 @@ export type Database = {
           blocked_reason: string | null
           priority: string
           notes: string | null
+          created_by: string | null
           created_at: string
         }
         Insert: {
@@ -422,6 +535,7 @@ export type Database = {
           blocked_reason?: string | null
           priority?: string
           notes?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Update: {
@@ -438,6 +552,7 @@ export type Database = {
           blocked_reason?: string | null
           priority?: string
           notes?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Relationships: [
@@ -470,6 +585,7 @@ export type Database = {
           due_date: string | null
           status: string
           assigned_to: string | null
+          created_by: string | null
           created_at: string
         }
         Insert: {
@@ -484,6 +600,7 @@ export type Database = {
           due_date?: string | null
           status?: string
           assigned_to?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Update: {
@@ -498,6 +615,7 @@ export type Database = {
           due_date?: string | null
           status?: string
           assigned_to?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Relationships: [
@@ -532,6 +650,7 @@ export type Database = {
           approved_by: string | null
           approval_date: string | null
           rejection_reason: string | null
+          created_by: string | null
           created_at: string
         }
         Insert: {
@@ -548,6 +667,7 @@ export type Database = {
           approved_by?: string | null
           approval_date?: string | null
           rejection_reason?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Update: {
@@ -564,6 +684,7 @@ export type Database = {
           approved_by?: string | null
           approval_date?: string | null
           rejection_reason?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Relationships: [
@@ -598,6 +719,12 @@ export type Database = {
           picked_date_time: string | null
           verified_by: string | null
           issue_note: string | null
+          verified_by_scan: boolean | null
+          scan_timestamp: string | null
+          last_scan_result: string | null
+          scanned_value: string | null
+          scan_match: boolean | null
+          created_by: string | null
           created_at: string
         }
         Insert: {
@@ -614,6 +741,12 @@ export type Database = {
           picked_date_time?: string | null
           verified_by?: string | null
           issue_note?: string | null
+          verified_by_scan?: boolean | null
+          scan_timestamp?: string | null
+          last_scan_result?: string | null
+          scanned_value?: string | null
+          scan_match?: boolean | null
+          created_by?: string | null
           created_at?: string
         }
         Update: {
@@ -630,6 +763,12 @@ export type Database = {
           picked_date_time?: string | null
           verified_by?: string | null
           issue_note?: string | null
+          verified_by_scan?: boolean | null
+          scan_timestamp?: string | null
+          last_scan_result?: string | null
+          scanned_value?: string | null
+          scan_match?: boolean | null
+          created_by?: string | null
           created_at?: string
         }
         Relationships: [
@@ -665,6 +804,7 @@ export type Database = {
           root_cause: string | null
           resolution: string | null
           resolved_date: string | null
+          created_by: string | null
           created_at: string
         }
         Insert: {
@@ -682,6 +822,7 @@ export type Database = {
           root_cause?: string | null
           resolution?: string | null
           resolved_date?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Update: {
@@ -699,6 +840,7 @@ export type Database = {
           root_cause?: string | null
           resolution?: string | null
           resolved_date?: string | null
+          created_by?: string | null
           created_at?: string
         }
         Relationships: [
@@ -718,6 +860,74 @@ export type Database = {
           }
         ]
       }
+      ecn_notices: {
+        Row: {
+          id: string
+          ecn_number: string
+          title: string
+          description: string | null
+          status: Database["public"]["Enums"]["ecn_status"]
+          priority: Database["public"]["Enums"]["ecn_priority"]
+          project_version_id: string
+          submitted_by: string | null
+          approved_by: string | null
+          submitted_at: string | null
+          approved_at: string | null
+          implementation_date: string | null
+          affected_bom_lines: string[]
+          reason: string | null
+          impact_summary: string | null
+          created_by: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          ecn_number: string
+          title: string
+          description?: string | null
+          status?: Database["public"]["Enums"]["ecn_status"]
+          priority?: Database["public"]["Enums"]["ecn_priority"]
+          project_version_id: string
+          submitted_by?: string | null
+          approved_by?: string | null
+          submitted_at?: string | null
+          approved_at?: string | null
+          implementation_date?: string | null
+          affected_bom_lines?: string[]
+          reason?: string | null
+          impact_summary?: string | null
+          created_by?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          ecn_number?: string
+          title?: string
+          description?: string | null
+          status?: Database["public"]["Enums"]["ecn_status"]
+          priority?: Database["public"]["Enums"]["ecn_priority"]
+          project_version_id?: string
+          submitted_by?: string | null
+          approved_by?: string | null
+          submitted_at?: string | null
+          approved_at?: string | null
+          implementation_date?: string | null
+          affected_bom_lines?: string[]
+          reason?: string | null
+          impact_summary?: string | null
+          created_by?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ecn_notices_project_version_id_fkey"
+            columns: ["project_version_id"]
+            isOneToOne: false
+            referencedRelation: "project_versions"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -726,7 +936,10 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
-      [_ in never]: never
+      ecn_priority: "critical" | "high" | "normal"
+      ecn_status: "draft" | "under_review" | "approved" | "implemented" | "rejected"
+      gate_name: "Proto" | "EVT" | "DVT" | "PVT" | "MP"
+      gate_status: "completed" | "in_progress" | "planned"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -853,6 +1066,11 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      ecn_priority: ["critical", "high", "normal"] as const,
+      ecn_status: ["draft", "under_review", "approved", "implemented", "rejected"] as const,
+      gate_name: ["Proto", "EVT", "DVT", "PVT", "MP"] as const,
+      gate_status: ["completed", "in_progress", "planned"] as const,
+    },
   },
 } as const

@@ -1,4 +1,5 @@
 import { useProject } from '@/contexts/ProjectContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { usePartRequests, useCreatePartRequest, useUpdatePartRequest, useCreatePickingOrder, useCreateIssue } from '@/hooks/use-supabase-data';
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
@@ -27,6 +28,8 @@ type Urgency = 'Standard' | 'Expedite' | 'Critical';
 
 const PartRequests = () => {
   const { selectedProject, selectedVersion } = useProject();
+  const { user } = useAuth();
+  const userEmail = user?.email ?? '';
   const versionId = selectedVersion?.id;
   const { data: requests = [], isLoading } = usePartRequests(versionId);
   const createRequest = useCreatePartRequest();
@@ -75,7 +78,7 @@ const PartRequests = () => {
         version_id: selectedVersion.id,
         part_number: partNumber.trim(),
         requested_qty: Number(requestedQty),
-        requested_by: 'current.user@opspulse.io',
+        requested_by: userEmail,
         needed_by_date: neededByDate,
         urgency,
       });
@@ -91,7 +94,7 @@ const PartRequests = () => {
     const request = requests.find(r => r.id === id);
     if (!request) return;
     try {
-      await updateRequest.mutateAsync({ id, status: 'Approved', approved_by: 'current.user@opspulse.io', approval_date: new Date().toISOString() });
+      await updateRequest.mutateAsync({ id, status: 'Approved', approved_by: userEmail, approval_date: new Date().toISOString() });
       await createPickingOrder.mutateAsync({
         project_id: selectedProject.id,
         version_id: selectedVersion.id,
@@ -127,7 +130,7 @@ const PartRequests = () => {
         related_module: 'PartRequest',
         related_record_id: rejectTarget.id,
         issue_description: `Part request rejected: ${rejectTarget.part_number} — ${rejectionReason.trim()}`,
-        raised_by: 'current.user@opspulse.io',
+        raised_by: userEmail,
         priority: 'Medium',
         status: 'Open',
       });

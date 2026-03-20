@@ -1,4 +1,5 @@
 import { useProject } from '@/contexts/ProjectContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { useIssues, useCreateIssue, useUpdateIssue } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
@@ -16,6 +17,8 @@ const statusOrder = ['Open', 'In Progress', 'Resolved', 'Closed'] as const;
 
 const Issues = () => {
   const { selectedProject, selectedVersion } = useProject();
+  const { user } = useAuth();
+  const userEmail = user?.email ?? '';
   const versionId = selectedVersion?.id;
   const { data: issues = [], isLoading } = useIssues(versionId);
   const createIssue = useCreateIssue();
@@ -38,7 +41,7 @@ const Issues = () => {
         related_module: newIssue.related_module,
         priority: newIssue.priority,
         assigned_to: newIssue.assigned_to.trim() || null,
-        raised_by: newIssue.raised_by.trim() || 'current.user@opspulse.io',
+        raised_by: newIssue.raised_by.trim() || userEmail,
       });
       toast.success('Issue created');
       setShowCreate(false);
