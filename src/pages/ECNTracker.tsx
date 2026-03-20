@@ -1,15 +1,16 @@
 import { useProject } from '@/contexts/ProjectContext';
-import { useAuth } from '@/contexts/AuthContext';
-import { useECNs, useCreateECN, useBomLines } from '@/hooks/use-supabase-data';
+import { useAuth, useRole } from '@/contexts/AuthContext';
+import { useECNs, useCreateECN, useUpdateECN, useBomLines } from '@/hooks/use-supabase-data';
 import type { EcnNoticeRow } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import {
   FileWarning, Plus, Loader2, Search, X, Check,
-  FileText, AlertTriangle, Clock, CheckCircle2, ChevronsUpDown,
+  FileText, AlertTriangle, Clock, CheckCircle2, ChevronsUpDown, AlertCircle,
 } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useState, useMemo } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -64,12 +65,14 @@ const DetailSection = ({ label, children }: { label: string; children: React.Rea
 const ECNTracker = () => {
   const { selectedProject, selectedVersion } = useProject();
   const { user } = useAuth();
+  const { can } = useRole();
   const userEmail = user?.email ?? '';
   const versionId = selectedVersion?.id;
 
-  const { data: ecns = [], isLoading } = useECNs(versionId);
+  const { data: ecns = [], isLoading, isError } = useECNs(versionId);
   const { data: bomLines = [] } = useBomLines(versionId);
   const createECN = useCreateECN();
+  const updateECN = useUpdateECN();
 
   // UI state
   const [selectedEcn, setSelectedEcn] = useState<EcnNoticeRow | null>(null);
@@ -84,6 +87,11 @@ const ECNTracker = () => {
   const [newPriority, setNewPriority] = useState<'critical' | 'high' | 'normal'>('normal');
   const [newParts, setNewParts] = useState<string[]>([]);
   const [partsOpen, setPartsOpen] = useState(false);
+
+  // Lifecycle action state
+  const [rejectTarget, setRejectTarget] = useState<string | null>(null); // ECN id
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [confirmImplement, setConfirmImplement] = useState<string | null>(null); // ECN id
 
   // ── Derived data ───────────────────────────────────────────────────────────
 
@@ -138,6 +146,22 @@ const ECNTracker = () => {
     );
   }
 
+  if (isError) {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+            <FileWarning className="h-4 w-4 text-muted-foreground" /> ECN Tracker
+          </h2>
+        </div>
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>Failed to load data. Please refresh.</AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
   // ── Create handler ─────────────────────────────────────────────────────────
 
   const resetCreate = () => {
@@ -164,8 +188,66 @@ const ECNTracker = () => {
       });
       toast.success('ECN created');
       resetCreate();
-    } catch {
+    } catch (err) {
+      console.error('[ECNTracker]', err);
       toast.error('Failed to create ECN');
+    }
+  };
+
+  // ── Lifecycle action handlers ──────────────────────────────────────────────
+
+  const handleSubmitForReview = async (ecn: EcnNoticeRow) => {
+    try {
+      await updateECN.mutateAsync({ id: ecn.id, status: 'under_review' });
+      setSelectedEcn({ ...ecn, status: 'under_review' });
+      toast.success('ECN submitted for review');
+    } catch (err) {
+      console.error('[ECNTracker]', err);
+      toast.error('Failed to update ECN');
+    }
+  };
+
+  const handleApprove = async (ecn: EcnNoticeRow) => {
+    try {
+      const now = new Date().toISOString();
+      await updateECN.mutateAsync({ id: ecn.id, status: 'approved', approved_by: userEmail, approved_at: now });
+      setSelectedEcn({ ...ecn, status: 'approved', approved_by: userEmail, approved_at: now });
+      toast.success('ECN approved');
+    } catch (err) {
+      console.error('[ECNTracker]', err);
+      toast.error('Failed to approve ECN');
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectTarget) return;
+    try {
+      await updateECN.mutateAsync({ id: rejectTarget, status: 'rejected', reason: rejectionReason.trim() || null });
+      if (selectedEcn?.id === rejectTarget) {
+        setSelectedEcn({ ...selectedEcn, status: 'rejected', reason: rejectionReason.trim() || selectedEcn.reason });
+      }
+      toast.success('ECN rejected');
+      setRejectTarget(null);
+      setRejectionReason('');
+    } catch (err) {
+      console.error('[ECNTracker]', err);
+      toast.error('Failed to reject ECN');
+    }
+  };
+
+  const handleImplement = async () => {
+    if (!confirmImplement) return;
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      await updateECN.mutateAsync({ id: confirmImplement, status: 'implemented', implementation_date: today });
+      if (selectedEcn?.id === confirmImplement) {
+        setSelectedEcn({ ...selectedEcn, status: 'implemented', implementation_date: today });
+      }
+      toast.success('ECN marked as implemented');
+      setConfirmImplement(null);
+    } catch (err) {
+      console.error('[ECNTracker]', err);
+      toast.error('Failed to update ECN');
     }
   };
 
@@ -190,13 +272,15 @@ const ECNTracker = () => {
             {selectedProject.project_name} — {selectedVersion.version_name}
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New ECN
-        </button>
+        {can('edit_bom') && (
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New ECN
+          </button>
+        )}
       </div>
 
       {/* Summary KPIs */}
@@ -380,6 +464,81 @@ const ECNTracker = () => {
                 <DetailSection label="Implementation Date">
                   <p>{selectedEcn.implementation_date ? new Date(selectedEcn.implementation_date + 'T00:00:00').toLocaleDateString() : '—'}</p>
                 </DetailSection>
+
+                {/* Lifecycle action buttons */}
+                {selectedEcn.status === 'draft' && (
+                  <div className="pt-2 border-t border-border">
+                    <Button
+                      size="sm"
+                      className="w-full"
+                      disabled={updateECN.isPending}
+                      onClick={() => handleSubmitForReview(selectedEcn)}
+                    >
+                      {updateECN.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
+                      Submit for Review
+                    </Button>
+                  </div>
+                )}
+
+                {selectedEcn.status === 'under_review' && (
+                  <div className="pt-2 border-t border-border flex gap-2">
+                    {can('approve_ecn') ? (
+                      <Button
+                        size="sm"
+                        className="flex-1"
+                        disabled={updateECN.isPending}
+                        onClick={() => handleApprove(selectedEcn)}
+                      >
+                        {updateECN.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
+                        <Check className="h-3.5 w-3.5 mr-1" />
+                        Approve
+                      </Button>
+                    ) : (
+                      <Button size="sm" className="flex-1" disabled title="Your role cannot approve ECNs">
+                        <Check className="h-3.5 w-3.5 mr-1" />
+                        Approve
+                      </Button>
+                    )}
+                    {can('reject_ecn') ? (
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="flex-1"
+                        disabled={updateECN.isPending}
+                        onClick={() => setRejectTarget(selectedEcn.id)}
+                      >
+                        <X className="h-3.5 w-3.5 mr-1" />
+                        Reject
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="destructive" className="flex-1" disabled title="Your role cannot reject ECNs">
+                        <X className="h-3.5 w-3.5 mr-1" />
+                        Reject
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {selectedEcn.status === 'approved' && (
+                  <div className="pt-2 border-t border-border">
+                    {can('implement_ecn') ? (
+                      <Button
+                        size="sm"
+                        className="w-full"
+                        disabled={updateECN.isPending}
+                        onClick={() => setConfirmImplement(selectedEcn.id)}
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                        Mark Implemented
+                      </Button>
+                    ) : (
+                      <Button size="sm" className="w-full" disabled title="Your role cannot mark ECNs as implemented">
+                        <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                        Mark Implemented
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -514,6 +673,62 @@ const ECNTracker = () => {
             >
               {createECN.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
               Create ECN
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reject Reason Dialog */}
+      <Dialog open={!!rejectTarget} onOpenChange={open => { if (!open) { setRejectTarget(null); setRejectionReason(''); } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reject ECN</DialogTitle>
+            <DialogDescription>Provide a reason for rejecting this ECN.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 pt-2">
+            <Textarea
+              value={rejectionReason}
+              onChange={e => setRejectionReason(e.target.value)}
+              placeholder="Rejection reason..."
+              rows={3}
+            />
+            <Button
+              variant="destructive"
+              className="w-full"
+              disabled={updateECN.isPending}
+              onClick={handleReject}
+            >
+              {updateECN.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+              Confirm Rejection
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Implement Confirmation Dialog */}
+      <Dialog open={!!confirmImplement} onOpenChange={open => { if (!open) setConfirmImplement(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Mark as Implemented</DialogTitle>
+            <DialogDescription>
+              This will mark the ECN as implemented with today's date. This action confirms the change has been applied.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2 pt-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setConfirmImplement(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="flex-1"
+              disabled={updateECN.isPending}
+              onClick={handleImplement}
+            >
+              {updateECN.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+              Confirm
             </Button>
           </div>
         </DialogContent>

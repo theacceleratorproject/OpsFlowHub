@@ -85,7 +85,8 @@ const PartRequests = () => {
       setShowConfirm(false);
       resetForm();
       toast.success('Part request submitted successfully');
-    } catch {
+    } catch (err) {
+      console.error('[PartRequests]', err);
       toast.error('Failed to submit request');
     }
   };
@@ -104,7 +105,8 @@ const PartRequests = () => {
       });
       queryClient.invalidateQueries({ queryKey: ['picking_orders', selectedVersion.id] });
       toast.success('Request approved — picking order created');
-    } catch {
+    } catch (err) {
+      console.error('[PartRequests]', err);
       toast.error('Failed to approve request');
     }
   };
@@ -137,7 +139,8 @@ const PartRequests = () => {
       queryClient.invalidateQueries({ queryKey: ['issues', selectedVersion.id] });
       toast.success('Request rejected — issue created');
       setRejectTarget(null);
-    } catch {
+    } catch (err) {
+      console.error('[PartRequests]', err);
       toast.error('Failed to reject request');
     }
   };

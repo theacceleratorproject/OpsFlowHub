@@ -1,16 +1,21 @@
 import { useProject } from '@/contexts/ProjectContext';
-import { useGateReviews, useGateReadinessSummary, useUpdateGateCriterion } from '@/hooks/use-supabase-data';
+import { useGateReviews, useGateReadinessSummary, useUpdateGateCriterion, useCreateGateCriterion, useUpdateGateReview } from '@/hooks/use-supabase-data';
 import type { GateReviewWithCriteria, GateCriterionRow } from '@/hooks/use-supabase-data';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
-import { ShieldCheck, Check, AlertTriangle, FileText, Package, ClipboardList, Loader2 } from 'lucide-react';
-import { useMemo } from 'react';
+import { ShieldCheck, Check, AlertTriangle, FileText, Package, ClipboardList, Loader2, AlertCircle, Plus, UserRoundPen } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { toast } from 'sonner';
-
-const GATE_ORDER = ['Proto', 'EVT', 'DVT', 'PVT', 'MP'] as const;
+import { PHASE_ORDER } from '@/lib/constants';
+import { computeGateReadiness } from '@/lib/computeGateReadiness';
+import { useRole } from '@/contexts/AuthContext';
 
 // ── SVG progress ring for the active phase pill ────────────────────────────
 
@@ -36,15 +41,15 @@ const GateReadiness = () => {
   const versionId = selectedVersion?.id;
 
   // Current version's review with criteria joined
-  const { data: reviewsForVersion = [], isLoading: reviewLoading } = useGateReviews(versionId);
+  const { data: reviewsForVersion = [], isLoading: reviewLoading, isError: reviewError } = useGateReviews(versionId);
   const currentReview: GateReviewWithCriteria | undefined = reviewsForVersion[0];
   const criteria: GateCriterionRow[] = currentReview?.gate_criteria ?? [];
 
   // Summary metrics computed server-side
-  const { data: summary, isLoading: summaryLoading } = useGateReadinessSummary(versionId);
+  const { data: summary, isLoading: summaryLoading, isError: summaryError } = useGateReadinessSummary(versionId);
 
   // All reviews across the project (for the phase timeline)
-  const { data: timelineReviews = [], isLoading: timelineLoading } = useQuery({
+  const { data: timelineReviews = [], isLoading: timelineLoading, isError: timelineError } = useQuery({
     queryKey: ['gate_reviews_timeline', projectId],
     enabled: !!projectId,
     queryFn: async () => {
@@ -53,13 +58,27 @@ const GateReadiness = () => {
         .select('gate_name, status, readiness_score, project_version_id, project_versions!inner(project_id)')
         .eq('project_versions.project_id', projectId!);
       if (error) throw error;
-      return data as unknown as { gate_name: string; status: string; readiness_score: number | null }[];
+      return data ?? [];
     },
   });
 
+  const { can } = useRole();
+
   const updateCriterion = useUpdateGateCriterion();
+  const createCriterion = useCreateGateCriterion();
+  const updateGateReview = useUpdateGateReview();
+
+  // Add-criterion inline form state: keyed by category
+  const [addingCategory, setAddingCategory] = useState<string | null>(null);
+  const [newCriterionText, setNewCriterionText] = useState('');
+  const [newCriterionOwner, setNewCriterionOwner] = useState('');
+
+  // Owner-edit popover state
+  const [editingOwnerId, setEditingOwnerId] = useState<string | null>(null);
+  const [editingOwnerValue, setEditingOwnerValue] = useState('');
 
   const isLoading = reviewLoading || summaryLoading || timelineLoading;
+  const isError = reviewError || summaryError || timelineError;
 
   // Map gate_name → review for timeline
   const reviewMap = useMemo(() => {
@@ -101,9 +120,51 @@ const GateReadiness = () => {
   const handleToggle = async (id: string, currentVal: boolean) => {
     try {
       await updateCriterion.mutateAsync({ id, is_met: !currentVal });
+      // Recalculate readiness score
+      if (currentReview) {
+        const updated = criteria.map(c => c.id === id ? { ...c, is_met: !currentVal } : c);
+        const newScore = computeGateReadiness(updated);
+        await updateGateReview.mutateAsync({ id: currentReview.id, readiness_score: newScore });
+      }
       toast.success(!currentVal ? 'Criterion met' : 'Criterion reopened');
-    } catch {
+    } catch (err) {
+      console.error('[GateReadiness]', err);
       toast.error('Failed to update criterion');
+    }
+  };
+
+  const handleAddCriterion = async (category: string) => {
+    if (!newCriterionText.trim() || !currentReview) return;
+    try {
+      await createCriterion.mutateAsync({
+        gate_review_id: currentReview.id,
+        category,
+        criterion: newCriterionText.trim(),
+        owner: newCriterionOwner.trim() || null,
+        is_met: false,
+      });
+      // Recalculate score (new unmet criterion lowers it)
+      const newScore = computeGateReadiness([...criteria, { id: 'new', is_met: false }]);
+      await updateGateReview.mutateAsync({ id: currentReview.id, readiness_score: newScore });
+      toast.success('Criterion added');
+      setAddingCategory(null);
+      setNewCriterionText('');
+      setNewCriterionOwner('');
+    } catch (err) {
+      console.error('[GateReadiness]', err);
+      toast.error('Failed to add criterion');
+    }
+  };
+
+  const handleUpdateOwner = async (id: string) => {
+    try {
+      await updateCriterion.mutateAsync({ id, owner: editingOwnerValue.trim() || null });
+      toast.success('Owner updated');
+      setEditingOwnerId(null);
+      setEditingOwnerValue('');
+    } catch (err) {
+      console.error('[GateReadiness]', err);
+      toast.error('Failed to update owner');
     }
   };
 
@@ -113,6 +174,22 @@ const GateReadiness = () => {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-muted-foreground" /> Gate Readiness
+          </h2>
+        </div>
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>Failed to load data. Please refresh.</AlertDescription>
+        </Alert>
       </div>
     );
   }
@@ -143,7 +220,7 @@ const GateReadiness = () => {
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="kpi-card">
         <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-4">Phase Timeline</h3>
         <div className="flex items-center justify-center gap-0 overflow-x-auto py-2">
-          {GATE_ORDER.map((gate, i) => {
+          {PHASE_ORDER.map((gate, i) => {
             const review = reviewMap.get(gate);
             const status = review?.status ?? 'none';
             const isCompleted = status === 'completed';
@@ -155,7 +232,7 @@ const GateReadiness = () => {
                 {i > 0 && (
                   <div className={cn(
                     "h-0.5 w-8 sm:w-12 md:w-16",
-                    isCompleted || (isCurrent && i > 0 && reviewMap.get(GATE_ORDER[i - 1])?.status === 'completed')
+                    isCompleted || (isCurrent && i > 0 && reviewMap.get(PHASE_ORDER[i - 1])?.status === 'completed')
                       ? "bg-ops-green/50"
                       : "bg-muted-foreground/20",
                   )} />
@@ -255,11 +332,50 @@ const GateReadiness = () => {
                         <Checkbox
                           checked={item.is_met}
                           onCheckedChange={() => handleToggle(item.id, item.is_met)}
+                          disabled={!can('approve_gate')}
                           className="mt-0.5"
+                          title={!can('approve_gate') ? 'Your role cannot update gate criteria' : undefined}
                         />
                         <div className="flex-1 min-w-0">
                           <p className={cn("text-xs", item.is_met ? "text-muted-foreground line-through" : "text-foreground")}>{item.criterion}</p>
-                          <p className="text-[10px] text-muted-foreground mt-0.5">{item.owner ?? '—'}</p>
+                          {can('approve_gate') ? (
+                          <Popover
+                            open={editingOwnerId === item.id}
+                            onOpenChange={open => {
+                              if (open) { setEditingOwnerId(item.id); setEditingOwnerValue(item.owner ?? ''); }
+                              else { setEditingOwnerId(null); setEditingOwnerValue(''); }
+                            }}
+                          >
+                            <PopoverTrigger asChild>
+                              <button
+                                type="button"
+                                className="flex items-center gap-1 text-[10px] text-muted-foreground mt-0.5 hover:text-foreground transition-colors group"
+                              >
+                                <UserRoundPen className="h-2.5 w-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                {item.owner ?? '—'}
+                              </button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-56 p-2" align="start">
+                              <form
+                                onSubmit={e => { e.preventDefault(); handleUpdateOwner(item.id); }}
+                                className="flex gap-1.5"
+                              >
+                                <Input
+                                  value={editingOwnerValue}
+                                  onChange={e => setEditingOwnerValue(e.target.value)}
+                                  placeholder="Owner name..."
+                                  className="text-xs h-7 flex-1"
+                                  autoFocus
+                                />
+                                <Button type="submit" size="sm" className="h-7 px-2 text-xs" disabled={updateCriterion.isPending}>
+                                  Save
+                                </Button>
+                              </form>
+                            </PopoverContent>
+                          </Popover>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground mt-0.5">{item.owner ?? '—'}</span>
+                          )}
                         </div>
                         <span className={cn(
                           "shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider",
@@ -269,6 +385,56 @@ const GateReadiness = () => {
                         </span>
                       </div>
                     ))}
+
+                    {/* Add criterion inline form */}
+                    {can('approve_gate') && (
+                      addingCategory === category ? (
+                        <div className="flex items-start gap-2 rounded-md border border-dashed border-border px-3 py-2.5">
+                          <div className="flex-1 space-y-1.5">
+                            <Input
+                              value={newCriterionText}
+                              onChange={e => setNewCriterionText(e.target.value)}
+                              placeholder="Criterion description..."
+                              className="text-xs h-7"
+                              autoFocus
+                            />
+                            <Input
+                              value={newCriterionOwner}
+                              onChange={e => setNewCriterionOwner(e.target.value)}
+                              placeholder="Owner (optional)"
+                              className="text-xs h-7"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <Button
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              disabled={!newCriterionText.trim() || createCriterion.isPending}
+                              onClick={() => handleAddCriterion(category)}
+                            >
+                              {createCriterion.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Add'}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs"
+                              onClick={() => { setAddingCategory(null); setNewCriterionText(''); setNewCriterionOwner(''); }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setAddingCategory(category)}
+                          className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors mt-1 px-1"
+                        >
+                          <Plus className="h-3 w-3" />
+                          Add criterion
+                        </button>
+                      )
+                    )}
                   </div>
                 </div>
               ))}

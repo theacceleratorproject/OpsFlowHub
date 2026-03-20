@@ -18,8 +18,11 @@ import Issues from "./pages/Issues";
 import GateReadiness from "./pages/GateReadiness";
 import ShortageAlerts from "./pages/ShortageAlerts";
 import ECNTracker from "./pages/ECNTracker";
+import AdminUsers from "./pages/AdminUsers";
+import ResetPassword from "./pages/ResetPassword";
 import NotFound from "./pages/NotFound";
 import { Loader2 } from "lucide-react";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 300_000 } },
@@ -62,6 +65,7 @@ const RootRoute = () => {
 const AppRoutes = () => (
   <Routes>
     <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
+    <Route path="/reset-password" element={<ResetPassword />} />
     <Route path="/" element={<RequireAuth><RootRoute /></RequireAuth>} />
     <Route path="/dashboard" element={<RequireAuth><ProtectedRoute><Dashboard /></ProtectedRoute></RequireAuth>} />
     <Route path="/bom" element={<RequireAuth><ProtectedRoute><BOM /></ProtectedRoute></RequireAuth>} />
@@ -73,6 +77,7 @@ const AppRoutes = () => (
     <Route path="/gate-readiness" element={<RequireAuth><ProtectedRoute><GateReadiness /></ProtectedRoute></RequireAuth>} />
     <Route path="/shortages" element={<RequireAuth><ProtectedRoute><ShortageAlerts /></ProtectedRoute></RequireAuth>} />
     <Route path="/ecns" element={<RequireAuth><ProtectedRoute><ECNTracker /></ProtectedRoute></RequireAuth>} />
+    <Route path="/admin/users" element={<RequireAuth><ProtectedRoute><AdminUsers /></ProtectedRoute></RequireAuth>} />
     <Route path="*" element={<NotFound />} />
   </Routes>
 );
@@ -85,7 +90,9 @@ const App = () => (
       <AuthProvider>
         <ProjectProvider>
           <BrowserRouter>
-            <AppRoutes />
+            <ErrorBoundary>
+              <AppRoutes />
+            </ErrorBoundary>
           </BrowserRouter>
         </ProjectProvider>
       </AuthProvider>

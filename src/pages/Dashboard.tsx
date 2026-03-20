@@ -8,13 +8,14 @@ import { motion } from 'framer-motion';
 import {
   Package, ClipboardList, ShoppingCart, Truck, AlertTriangle,
   Loader2, Wrench, ShieldCheck, AlertOctagon, FileWarning,
-  ArrowRight,
+  ArrowRight, AlertCircle,
 } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-
-const phaseOrder = ['MP', 'EVT', 'DVT', 'PPVT', 'Production'] as const;
+import { PHASE_ORDER } from '@/lib/constants';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 // ── Circular progress ring for gate readiness ────────────────────────────────
 
@@ -39,14 +40,14 @@ const Dashboard = () => {
   const navigate = useNavigate();
 
   const versionId = selectedVersion?.id;
-  const { data: allLines = [], isLoading: linesLoading } = useBomLines(versionId);
-  const { data: suppliers = [], isLoading: suppliersLoading } = useSuppliers();
-  const { data: inventory = [], isLoading: inventoryLoading } = useInventory(versionId);
-  const { data: tasks = [], isLoading: tasksLoading } = useTasks(versionId);
-  const { data: requests = [], isLoading: requestsLoading } = usePartRequests(versionId);
-  const { data: picks = [], isLoading: picksLoading } = usePickingOrders(versionId);
-  const { data: issues = [], isLoading: issuesLoading } = useIssues(versionId);
-  const { data: workOrders = [], isLoading: woLoading } = useWorkOrders(versionId);
+  const { data: allLines = [], isLoading: linesLoading, isError: linesError } = useBomLines(versionId);
+  const { isLoading: suppliersLoading, isError: suppliersError } = useSuppliers();
+  const { data: inventory = [], isLoading: inventoryLoading, isError: inventoryError } = useInventory(versionId);
+  const { data: tasks = [], isLoading: tasksLoading, isError: tasksError } = useTasks(versionId);
+  const { data: requests = [], isLoading: requestsLoading, isError: requestsError } = usePartRequests(versionId);
+  const { data: picks = [], isLoading: picksLoading, isError: picksError } = usePickingOrders(versionId);
+  const { data: issues = [], isLoading: issuesLoading, isError: issuesError } = useIssues(versionId);
+  const { data: workOrders = [], isLoading: woLoading, isError: woError } = useWorkOrders(versionId);
 
   // New data sources for summary cards
   const { data: gateReviews = [] } = useGateReviews(versionId);
@@ -54,6 +55,7 @@ const Dashboard = () => {
   const { data: ecns = [] } = useECNs(versionId);
 
   const isLoading = linesLoading || suppliersLoading || inventoryLoading || tasksLoading || requestsLoading || picksLoading || issuesLoading || woLoading;
+  const isError = linesError || suppliersError || inventoryError || tasksError || requestsError || picksError || issuesError || woError;
 
   // ── Derived data ──────────────────────────────────────────────────────────
 
@@ -131,7 +133,12 @@ const Dashboard = () => {
         <p className="text-xs text-muted-foreground">{selectedProject.project_name} — {selectedVersion.version_name}</p>
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>Failed to load data. Please refresh.</AlertDescription>
+        </Alert>
+      ) : isLoading ? (
         <div className="flex items-center justify-center py-10">
           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
         </div>
@@ -140,116 +147,122 @@ const Dashboard = () => {
           {/* ── Top Summary Cards (Gate / Shortages / ECNs) ──────────────── */}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {/* Gate Readiness */}
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0 }}
-              className="kpi-card"
-            >
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Gate Readiness
-                </span>
-                <ShieldCheck className="h-4 w-4 text-muted-foreground/50" />
-              </div>
-              <div className="flex items-center gap-4">
-                <MiniRing percent={gatePercent} />
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-foreground">{gatePhase}</p>
-                  <span className={cn(
-                    'inline-block mt-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
-                    gateStatus === 'completed' && 'text-ops-green bg-ops-green/15',
-                    gateStatus === 'in_progress' && 'text-blue-500 bg-blue-500/15',
-                    gateStatus === 'planned' && 'text-muted-foreground bg-muted',
-                  )}>
-                    {gateStatus === 'in_progress' ? 'In Progress' : gateStatus === 'completed' ? 'Complete' : 'Planned'}
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={() => navigate('/gate-readiness')}
-                className="mt-3 flex items-center gap-1 text-[10px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+            <ErrorBoundary inline>
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0 }}
+                className="kpi-card"
               >
-                View gate review <ArrowRight className="h-3 w-3" />
-              </button>
-            </motion.div>
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Gate Readiness
+                  </span>
+                  <ShieldCheck className="h-4 w-4 text-muted-foreground/50" />
+                </div>
+                <div className="flex items-center gap-4">
+                  <MiniRing percent={gatePercent} />
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-foreground">{gatePhase}</p>
+                    <span className={cn(
+                      'inline-block mt-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
+                      gateStatus === 'completed' && 'text-ops-green bg-ops-green/15',
+                      gateStatus === 'in_progress' && 'text-blue-500 bg-blue-500/15',
+                      gateStatus === 'planned' && 'text-muted-foreground bg-muted',
+                    )}>
+                      {gateStatus === 'in_progress' ? 'In Progress' : gateStatus === 'completed' ? 'Complete' : 'Planned'}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => navigate('/gate-readiness')}
+                  className="mt-3 flex items-center gap-1 text-[10px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  View gate review <ArrowRight className="h-3 w-3" />
+                </button>
+              </motion.div>
+            </ErrorBoundary>
 
             {/* Shortage Alerts */}
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.05 }}
-              className="kpi-card"
-            >
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Shortage Alerts
-                </span>
-                <AlertOctagon className="h-4 w-4 text-muted-foreground/50" />
-              </div>
-              <div className="flex items-center gap-3">
-                <span className={cn(
-                  'text-2xl font-bold',
-                  shortageAlerts.length > 0 ? 'text-accent' : 'text-ops-green',
-                )}>
-                  {shortageAlerts.length}
-                </span>
-                {shortageAlerts.length > 0 && (
-                  <span className="rounded bg-accent/15 px-2 py-0.5 text-[10px] font-bold text-accent animate-pulse">
-                    {shortageAlerts.length} at risk
-                  </span>
-                )}
-              </div>
-              {topShortage ? (
-                <p className="mt-2 text-[11px] text-muted-foreground truncate">
-                  Most critical: <span className="font-mono font-medium text-foreground">{topShortage.part_number}</span>
-                  {' '}— {topShortage.shortfall} short
-                </p>
-              ) : (
-                <p className="mt-2 text-[11px] text-ops-green">All parts adequately stocked</p>
-              )}
-              <button
-                onClick={() => navigate('/shortages')}
-                className="mt-3 flex items-center gap-1 text-[10px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+            <ErrorBoundary inline>
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.05 }}
+                className="kpi-card"
               >
-                View shortages <ArrowRight className="h-3 w-3" />
-              </button>
-            </motion.div>
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Shortage Alerts
+                  </span>
+                  <AlertOctagon className="h-4 w-4 text-muted-foreground/50" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className={cn(
+                    'text-2xl font-bold',
+                    shortageAlerts.length > 0 ? 'text-accent' : 'text-ops-green',
+                  )}>
+                    {shortageAlerts.length}
+                  </span>
+                  {shortageAlerts.length > 0 && (
+                    <span className="rounded bg-accent/15 px-2 py-0.5 text-[10px] font-bold text-accent animate-pulse">
+                      {shortageAlerts.length} at risk
+                    </span>
+                  )}
+                </div>
+                {topShortage ? (
+                  <p className="mt-2 text-[11px] text-muted-foreground truncate">
+                    Most critical: <span className="font-mono font-medium text-foreground">{topShortage.part_number}</span>
+                    {' '}— {topShortage.shortfall} short
+                  </p>
+                ) : (
+                  <p className="mt-2 text-[11px] text-ops-green">All parts adequately stocked</p>
+                )}
+                <button
+                  onClick={() => navigate('/shortages')}
+                  className="mt-3 flex items-center gap-1 text-[10px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  View shortages <ArrowRight className="h-3 w-3" />
+                </button>
+              </motion.div>
+            </ErrorBoundary>
 
             {/* ECN Activity */}
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 }}
-              className="kpi-card"
-            >
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  ECN Activity
-                </span>
-                <FileWarning className="h-4 w-4 text-muted-foreground/50" />
-              </div>
-              <div className="flex items-center gap-3">
-                <span className={cn(
-                  'text-2xl font-bold',
-                  openEcns.length > 0 ? 'text-ops-amber' : 'text-foreground',
-                )}>
-                  {openEcns.length}
-                </span>
-                <span className="text-[11px] text-muted-foreground">open ECN{openEcns.length !== 1 ? 's' : ''}</span>
-              </div>
-              <p className="mt-2 text-[11px] text-muted-foreground">
-                {lastEcnDate
-                  ? <>Last submitted: <span className="font-medium text-foreground">{new Date(lastEcnDate).toLocaleDateString()}</span></>
-                  : 'No ECNs submitted'}
-              </p>
-              <button
-                onClick={() => navigate('/ecns')}
-                className="mt-3 flex items-center gap-1 text-[10px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+            <ErrorBoundary inline>
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 }}
+                className="kpi-card"
               >
-                View ECN tracker <ArrowRight className="h-3 w-3" />
-              </button>
-            </motion.div>
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    ECN Activity
+                  </span>
+                  <FileWarning className="h-4 w-4 text-muted-foreground/50" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className={cn(
+                    'text-2xl font-bold',
+                    openEcns.length > 0 ? 'text-ops-amber' : 'text-foreground',
+                  )}>
+                    {openEcns.length}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">open ECN{openEcns.length !== 1 ? 's' : ''}</span>
+                </div>
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  {lastEcnDate
+                    ? <>Last submitted: <span className="font-medium text-foreground">{new Date(lastEcnDate).toLocaleDateString()}</span></>
+                    : 'No ECNs submitted'}
+                </p>
+                <button
+                  onClick={() => navigate('/ecns')}
+                  className="mt-3 flex items-center gap-1 text-[10px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  View ECN tracker <ArrowRight className="h-3 w-3" />
+                </button>
+              </motion.div>
+            </ErrorBoundary>
           </div>
 
           {/* ── Existing KPI Grid ─────────────────────────────────────────── */}
@@ -286,7 +299,7 @@ const Dashboard = () => {
                 Task Progress by Phase
               </h3>
               <div className="space-y-3">
-                {phaseOrder.map(phase => {
+                {PHASE_ORDER.map(phase => {
                   const phaseTasks = tasks.filter(t => t.phase === phase);
                   if (phaseTasks.length === 0) return null;
                   const avgProgress = Math.round(phaseTasks.reduce((s, t) => s + Number(t.progress), 0) / phaseTasks.length * 100);

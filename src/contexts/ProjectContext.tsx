@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { useProjects, useProjectVersions } from '@/hooks/use-supabase-data';
 import type { ProjectRow, ProjectVersionRow } from '@/hooks/use-supabase-data';
+import { DEFAULT_PROJECT_NAME, DEFAULT_VERSION_NAME } from '@/lib/constants';
 
 interface ProjectContextType {
   selectedProject: ProjectRow | null;
@@ -20,7 +21,7 @@ export const ProjectProvider = ({ children }: { children: ReactNode }) => {
   const [didAutoSelect, setDidAutoSelect] = useState(false);
 
   const { data: projects = [], isFetched: projectsFetched } = useProjects();
-  const defaultProject = projects.find(p => p.project_name === 'Ice Pack NPI') ?? null;
+  const defaultProject = projects.find(p => p.project_name === DEFAULT_PROJECT_NAME) ?? null;
   const { data: versions = [], isFetched: versionsFetched } = useProjectVersions(defaultProject?.id);
 
   // Auto-select Ice Pack NPI / DVT on first load
@@ -37,7 +38,7 @@ export const ProjectProvider = ({ children }: { children: ReactNode }) => {
     }
     // Both queries settled — attempt selection
     if (defaultProject && versionsFetched) {
-      const dvt = versions.find(v => v.version_name === 'DVT');
+      const dvt = versions.find(v => v.version_name === DEFAULT_VERSION_NAME);
       if (dvt) {
         setSelectedProject(defaultProject);
         setSelectedVersion(dvt);

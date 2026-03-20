@@ -30,6 +30,8 @@ const PickingOrders = () => {
   const [pickedQtyInput, setPickedQtyInput] = useState('');
   const [shortageNote, setShortageNote] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('All');
+  const [issueTarget, setIssueTarget] = useState<string | null>(null);
+  const [issueNoteText, setIssueNoteText] = useState('');
 
   if (!selectedProject || !selectedVersion) return null;
 
@@ -48,7 +50,8 @@ const PickingOrders = () => {
       toast.success('Picking order created');
       setShowCreate(false);
       setNewPick({ work_order_number: '', part_number: '', pick_qty: '', bin_location: '', assigned_picker: '' });
-    } catch {
+    } catch (err) {
+      console.error('[PickingOrders]', err);
       toast.error('Failed to create picking order');
     }
   };
@@ -82,7 +85,8 @@ const PickingOrders = () => {
       }
 
       toast.success(`Status updated to ${status}`);
-    } catch {
+    } catch (err) {
+      console.error('[PickingOrders]', err);
       toast.error('Failed to update status');
     }
   };
@@ -117,29 +121,32 @@ const PickingOrders = () => {
         toast.success('Picked in full');
       }
       setPickConfirm(null);
-    } catch {
+    } catch (err) {
+      console.error('[PickingOrders]', err);
       toast.error('Failed to update pick');
     }
   };
 
-  const handleFlagIssue = async (id: string) => {
-    const note = window.prompt('Issue note:');
-    if (!note) return;
+  const handleFlagIssue = async () => {
+    if (!issueTarget || !issueNoteText.trim()) return;
     try {
-      const pick = picks.find(p => p.id === id);
-      await updatePick.mutateAsync({ id, status: 'Issue', issue_note: note });
+      const pick = picks.find(p => p.id === issueTarget);
+      await updatePick.mutateAsync({ id: issueTarget, status: 'Issue', issue_note: issueNoteText.trim() });
       await createIssue.mutateAsync({
         project_id: selectedProject.id,
         version_id: selectedVersion.id,
         related_module: 'PickingOrder',
-        related_record_id: id,
-        issue_description: `Picking issue: ${pick?.part_number ?? 'Unknown part'} at ${pick?.bin_location ?? 'N/A'} — ${note}`,
+        related_record_id: issueTarget,
+        issue_description: `Picking issue: ${pick?.part_number ?? 'Unknown part'} at ${pick?.bin_location ?? 'N/A'} — ${issueNoteText.trim()}`,
         raised_by: userEmail,
         priority: 'Medium',
         status: 'Open',
       });
       toast.success('Issue flagged and created in Issues');
-    } catch {
+      setIssueTarget(null);
+      setIssueNoteText('');
+    } catch (err) {
+      console.error('[PickingOrders]', err);
       toast.error('Failed to flag issue');
     }
   };
@@ -291,7 +298,7 @@ const PickingOrders = () => {
                       {pick.status === 'In Progress' && (
                         <>
                           <button onClick={() => openPickConfirm(pick.id)} className="rounded bg-ops-green/15 px-2.5 py-1 text-[10px] font-semibold text-ops-green transition-colors hover:bg-ops-green/25">Picked</button>
-                          <button onClick={() => handleFlagIssue(pick.id)} className="rounded bg-accent/15 px-2.5 py-1 text-[10px] font-semibold text-accent transition-colors hover:bg-accent/25">Issue</button>
+                          <button onClick={() => { setIssueTarget(pick.id); setIssueNoteText(''); }} className="rounded bg-accent/15 px-2.5 py-1 text-[10px] font-semibold text-accent transition-colors hover:bg-accent/25">Issue</button>
                         </>
                       )}
                       {pick.status === 'Picked' && (
@@ -354,7 +361,7 @@ const PickingOrders = () => {
                           {pick.status === 'In Progress' && (
                             <>
                               <button onClick={() => openPickConfirm(pick.id)} className="rounded bg-ops-green/15 px-2.5 py-1 text-[10px] font-semibold text-ops-green transition-colors hover:bg-ops-green/25">Picked</button>
-                              <button onClick={() => handleFlagIssue(pick.id)} className="rounded bg-accent/15 px-2.5 py-1 text-[10px] font-semibold text-accent transition-colors hover:bg-accent/25">Issue</button>
+                              <button onClick={() => { setIssueTarget(pick.id); setIssueNoteText(''); }} className="rounded bg-accent/15 px-2.5 py-1 text-[10px] font-semibold text-accent transition-colors hover:bg-accent/25">Issue</button>
                             </>
                           )}
                           {pick.status === 'Picked' && (
@@ -440,6 +447,27 @@ const PickingOrders = () => {
             >
               {updatePick.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
               {pickConfirm && Number(pickedQtyInput) < pickConfirm.pick_qty ? 'Confirm Partial Pick' : 'Confirm Pick'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!issueTarget} onOpenChange={open => { if (!open) { setIssueTarget(null); setIssueNoteText(''); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Flag Issue</DialogTitle>
+            <DialogDescription>
+              Describe the issue with this picking order.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 pt-2">
+            <div>
+              <Label>Issue Note *</Label>
+              <Textarea value={issueNoteText} onChange={e => setIssueNoteText(e.target.value)} rows={3} placeholder="e.g. Part not found at bin location, damaged item, wrong part..." autoFocus />
+            </div>
+            <Button onClick={handleFlagIssue} disabled={updatePick.isPending || createIssue.isPending || !issueNoteText.trim()} className="w-full">
+              {(updatePick.isPending || createIssue.isPending) ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Flag Issue
             </Button>
           </div>
         </DialogContent>

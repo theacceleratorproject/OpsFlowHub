@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,6 +22,9 @@ const Login = () => {
   const [signupEmail, setSignupEmail] = useState('');
   const [signupPassword, setSignupPassword] = useState('');
   const [signupConfirm, setSignupConfirm] = useState('');
+
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,6 +57,26 @@ const Login = () => {
       toast.error(error.message || 'Signup failed');
     } else {
       toast.success('Account created! Check your email to verify, then log in.');
+    }
+  };
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!forgotEmail.trim()) {
+      toast.error('Please enter your email address');
+      return;
+    }
+    setIsLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(forgotEmail.trim(), {
+      redirectTo: window.location.origin + '/reset-password',
+    });
+    setIsLoading(false);
+    if (error) {
+      toast.error(error.message || 'Failed to send reset email');
+    } else {
+      toast.success('Password reset email sent. Check your inbox.');
+      setShowForgot(false);
+      setForgotEmail('');
     }
   };
 
@@ -120,6 +144,36 @@ const Login = () => {
                       Sign In
                     </Button>
                   </form>
+                  <button
+                    type="button"
+                    onClick={() => { setShowForgot(true); setForgotEmail(loginEmail); }}
+                    className="w-full text-center text-xs text-muted-foreground hover:text-foreground transition-colors mt-3"
+                  >
+                    Forgot password?
+                  </button>
+                  {showForgot && (
+                    <form onSubmit={handleForgotPassword} className="space-y-3 rounded-md border border-border p-3 mt-3">
+                      <p className="text-xs text-muted-foreground">
+                        Enter your email to receive a password reset link.
+                      </p>
+                      <Input
+                        type="email"
+                        value={forgotEmail}
+                        onChange={e => setForgotEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        required
+                      />
+                      <div className="flex gap-2">
+                        <Button type="submit" disabled={isLoading} size="sm" className="flex-1">
+                          {isLoading && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
+                          Send Reset Link
+                        </Button>
+                        <Button type="button" variant="ghost" size="sm" onClick={() => setShowForgot(false)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </form>
+                  )}
                 </TabsContent>
 
                 <TabsContent value="signup">

@@ -1,21 +1,22 @@
 import { ReactNode } from 'react';
 import { useProject } from '@/contexts/ProjectContext';
-import { useAuth } from '@/contexts/AuthContext';
-import { useShortageAlerts, useProjects, useProjectVersions } from '@/hooks/use-supabase-data';
+import { useAuth, useRole } from '@/contexts/AuthContext';
+import { useShortageAlerts, useProjects } from '@/hooks/use-supabase-data';
 import type { ProjectRow, ProjectVersionRow } from '@/hooks/use-supabase-data';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ClipboardList, ShoppingCart,
   Truck, AlertTriangle, FileText, LogOut, ShieldCheck,
-  AlertOctagon, FileWarning, ChevronDown,
+  AlertOctagon, FileWarning, ChevronDown, Users,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
-  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
-  DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
+  DropdownMenuLabel, DropdownMenuSeparator,
+  DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
+import { ProjectMenuEntry } from '@/components/layout/ProjectMenuEntry';
 
 const navItems = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -30,16 +31,31 @@ const navItems = [
   { path: '/issues', label: 'Issues', icon: AlertTriangle },
 ];
 
+// Nav paths hidden for the executive role
+const EXECUTIVE_HIDDEN_PATHS = new Set(['/tasks', '/bom', '/materials', '/part-requests', '/picking-orders']);
+
 const Layout = ({ children }: { children: ReactNode }) => {
   const { selectedProject, selectedVersion, setSelectedProject, setSelectedVersion } = useProject();
   const { user, signOut } = useAuth();
+  const { role } = useRole();
   const navigate = useNavigate();
   const location = useLocation();
   const { data: shortageAlerts = [] } = useShortageAlerts(selectedVersion?.id);
 
+  const { can } = useRole();
+
+  const visibleNavItems = (() => {
+    let items = role === 'executive'
+      ? navItems.filter(item => !EXECUTIVE_HIDDEN_PATHS.has(item.path))
+      : [...navItems];
+    if (can('manage_users')) {
+      items = [...items, { path: '/admin/users', label: 'Users', icon: Users }];
+    }
+    return items;
+  })();
+
   // Data for project/version selector
   const { data: projects = [] } = useProjects();
-  const { data: versions = [] } = useProjectVersions(selectedProject?.id);
 
   const handleSelectVersion = (project: ProjectRow, version: ProjectVersionRow) => {
     setSelectedProject(project);
@@ -134,6 +150,11 @@ const Layout = ({ children }: { children: ReactNode }) => {
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel className="font-normal">
                   <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
+                  {role && (
+                    <p className="text-[10px] font-medium text-muted-foreground/70 mt-0.5 capitalize">
+                      {role.replace(/_/g, ' ')}
+                    </p>
+                  )}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleSignOut} className="text-xs cursor-pointer">
@@ -146,7 +167,7 @@ const Layout = ({ children }: { children: ReactNode }) => {
         </div>
         {selectedProject && (
           <nav className="flex gap-0.5 overflow-x-auto px-4 pb-2 md:px-6">
-            {navItems.map(item => {
+            {visibleNavItems.map(item => {
               const Icon = item.icon;
               const isActive = location.pathname === item.path;
               const showBadge = item.path === '/shortages' && shortageAlerts.length > 0;
@@ -177,71 +198,6 @@ const Layout = ({ children }: { children: ReactNode }) => {
         {children}
       </main>
     </div>
-  );
-};
-
-// ── Sub-component: project entry with version sub-menu ───────────────────────
-
-const ProjectMenuEntry = ({
-  project,
-  isCurrentProject,
-  currentVersionId,
-  onSelect,
-}: {
-  project: ProjectRow;
-  isCurrentProject: boolean;
-  currentVersionId: string;
-  onSelect: (project: ProjectRow, version: ProjectVersionRow) => void;
-}) => {
-  const { data: versions = [] } = useProjectVersions(project.id);
-
-  // If there's only one version or no versions, show as a flat item
-  if (versions.length <= 1) {
-    const version = versions[0];
-    if (!version) return null;
-    const isCurrent = isCurrentProject && version.id === currentVersionId;
-    return (
-      <DropdownMenuItem
-        onClick={() => onSelect(project, version)}
-        className={cn("text-xs cursor-pointer", isCurrent && "bg-accent/10")}
-      >
-        <span className={cn("truncate", isCurrent && "font-semibold")}>
-          {project.project_name} — {version.version_name}
-        </span>
-        {isCurrent && (
-          <span className="ml-auto text-[9px] text-muted-foreground">current</span>
-        )}
-      </DropdownMenuItem>
-    );
-  }
-
-  return (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger className="text-xs cursor-pointer">
-        <span className={cn("truncate", isCurrentProject && "font-semibold")}>
-          {project.project_name}
-        </span>
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className="w-44">
-        {versions.map(version => {
-          const isCurrent = isCurrentProject && version.id === currentVersionId;
-          return (
-            <DropdownMenuItem
-              key={version.id}
-              onClick={() => onSelect(project, version)}
-              className={cn("text-xs cursor-pointer", isCurrent && "bg-accent/10")}
-            >
-              <span className={cn("truncate", isCurrent && "font-semibold")}>
-                {version.version_name}
-              </span>
-              {isCurrent && (
-                <span className="ml-auto text-[9px] text-muted-foreground">current</span>
-              )}
-            </DropdownMenuItem>
-          );
-        })}
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
   );
 };
 

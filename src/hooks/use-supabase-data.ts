@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import type { Tables, TablesInsert, TablesUpdate } from '@/integrations/supabase/types';
+import { computeShortages } from '@/lib/computeShortages';
 
 // ── Row type exports ──────────────────────────────────────────────
 export type BomLineRow = Tables<'bom_lines'>;
@@ -55,7 +56,7 @@ export const useUpdateBomLine = () => {
 export const useUploadBomLines = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ lines, versionId }: { lines: TablesInsert<'bom_lines'>[]; versionId: string }) => {
+    mutationFn: async ({ lines, versionId: _versionId }: { lines: TablesInsert<'bom_lines'>[]; versionId: string }) => {
       const batchSize = 500;
       for (let i = 0; i < lines.length; i += batchSize) {
         const batch = lines.slice(i, i + batchSize);
@@ -359,6 +360,19 @@ export const useCreatePartRequest = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (req: TablesInsert<'part_requests'>) => {
+      // Auto-set urgency to Critical when inventory on_hand is 0
+      if (!req.urgency || req.urgency === 'Standard') {
+        const { data: invData } = await supabase
+          .from('inventory')
+          .select('on_hand_qty')
+          .eq('part_number', req.part_number)
+          .maybeSingle();
+
+        if (!invData || (invData.on_hand_qty ?? 0) === 0) {
+          req = { ...req, urgency: 'Critical' };
+        }
+      }
+
       const { data, error } = await supabase.from('part_requests').insert(req).select().single();
       if (error) throw error;
       return data as PartRequestRow;
@@ -569,23 +583,7 @@ export const useCreateWorkOrderLines = () => {
 
 // ── Shortage Alerts ──────────────────────────────────────────────
 
-export interface AffectedWorkOrder {
-  id: string;
-  work_order_number: string;
-  created_at: string;
-  status: string;
-}
-
-export interface ShortageAlert {
-  part_number: string;
-  part_name: string;
-  on_hand: number;
-  required: number;
-  shortfall: number;
-  affected_work_orders: AffectedWorkOrder[];
-  supplier_name: string | null;
-  lead_time_days: number | null;
-}
+export type { ShortageAlert, AffectedWorkOrder } from '@/lib/computeShortages';
 
 export const useShortageAlerts = (projectVersionId?: string) =>
   useQuery({
@@ -616,91 +614,12 @@ export const useShortageAlerts = (projectVersionId?: string) =>
       if (wolRes.error) throw wolRes.error;
       if (supRes.error) throw supRes.error;
 
-      const bom = bomRes.data ?? [];
-      const inv = invRes.data ?? [];
-      const wol = (wolRes.data ?? []) as unknown as {
-        part_number: string;
-        work_orders: { id: string; work_order_number: string; status: string; created_at: string };
-      }[];
-      const sup = supRes.data ?? [];
-
-      // Aggregate inventory by part_number
-      const invMap = new Map<string, number>();
-      inv.forEach(i => {
-        invMap.set(i.part_number, (invMap.get(i.part_number) ?? 0) + (i.on_hand_qty ?? 0));
-      });
-
-      // Aggregate BOM: deduplicate by component_number, sum required_qty, capture description
-      const bomMap = new Map<string, { required: number; name: string }>();
-      bom.forEach(l => {
-        if (l.bom_level === 0) return; // skip top-level assembly row
-        const existing = bomMap.get(l.component_number);
-        if (existing) {
-          existing.required += Number(l.required_qty);
-        } else {
-          bomMap.set(l.component_number, {
-            required: Number(l.required_qty),
-            name: l.object_description ?? l.component_number,
-          });
-        }
-      });
-
-      // Map part_number → work orders that include it
-      const woByPart = new Map<string, Map<string, AffectedWorkOrder>>();
-      wol.forEach(line => {
-        const wo = line.work_orders;
-        if (!woByPart.has(line.part_number)) woByPart.set(line.part_number, new Map());
-        const map = woByPart.get(line.part_number)!;
-        if (!map.has(wo.id)) {
-          map.set(wo.id, {
-            id: wo.id,
-            work_order_number: wo.work_order_number,
-            created_at: wo.created_at,
-            status: wo.status,
-          });
-        }
-      });
-
-      // Best supplier per part (shortest lead time)
-      const supMap = new Map<string, { supplier_name: string; lead_time_days: number | null }>();
-      sup.forEach(s => {
-        const existing = supMap.get(s.part_number);
-        if (!existing || (s.lead_time_days ?? Infinity) < (existing.lead_time_days ?? Infinity)) {
-          supMap.set(s.part_number, { supplier_name: s.supplier_name, lead_time_days: s.lead_time_days });
-        }
-      });
-
-      // Build shortage alerts
-      const alerts: ShortageAlert[] = [];
-      bomMap.forEach(({ required, name }, partNumber) => {
-        const onHand = invMap.get(partNumber) ?? 0;
-        if (onHand >= required) return; // no shortage
-
-        const shortfall = required - onHand;
-        const affectedWOs = woByPart.get(partNumber);
-        const supplier = supMap.get(partNumber);
-
-        alerts.push({
-          part_number: partNumber,
-          part_name: name,
-          on_hand: onHand,
-          required,
-          shortfall,
-          affected_work_orders: affectedWOs ? Array.from(affectedWOs.values()) : [],
-          supplier_name: supplier?.supplier_name ?? null,
-          lead_time_days: supplier?.lead_time_days ?? null,
-        });
-      });
-
-      // Sort: largest shortfall first, then by nearest work order date
-      alerts.sort((a, b) => {
-        if (b.shortfall !== a.shortfall) return b.shortfall - a.shortfall;
-        const aDate = a.affected_work_orders[0]?.created_at ?? '';
-        const bDate = b.affected_work_orders[0]?.created_at ?? '';
-        return aDate.localeCompare(bDate);
-      });
-
-      return alerts;
+      return computeShortages(
+        bomRes.data ?? [],
+        invRes.data ?? [],
+        wolRes.data ?? [],
+        supRes.data ?? [],
+      );
     },
   });
 
@@ -719,7 +638,7 @@ export const useGateReviews = (projectVersionId?: string) =>
         .eq('project_version_id', projectVersionId!)
         .order('created_at', { ascending: true });
       if (error) throw error;
-      return (data ?? []) as unknown as GateReviewWithCriteria[];
+      return data ?? [];
     },
   });
 
@@ -728,6 +647,51 @@ export const useUpdateGateCriterion = () => {
   return useMutation({
     mutationFn: async ({ id, ...updates }: TablesUpdate<'gate_criteria'> & { id: string }) => {
       const { data, error } = await supabase.from('gate_criteria').update(updates).eq('id', id).select().single();
+      if (error) throw error;
+      return data as GateCriterionRow;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['gate_reviews'] });
+      qc.invalidateQueries({ queryKey: ['gate_readiness_summary'] });
+    },
+  });
+};
+
+export const useCreateGateReview = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (review: TablesInsert<'gate_reviews'>) => {
+      const { data, error } = await supabase.from('gate_reviews').insert(review).select().single();
+      if (error) throw error;
+      return data as GateReviewRow;
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['gate_reviews', data.project_version_id] });
+      qc.invalidateQueries({ queryKey: ['gate_readiness_summary', data.project_version_id] });
+    },
+  });
+};
+
+export const useUpdateGateReview = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...updates }: TablesUpdate<'gate_reviews'> & { id: string }) => {
+      const { data, error } = await supabase.from('gate_reviews').update(updates).eq('id', id).select().single();
+      if (error) throw error;
+      return data as GateReviewRow;
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['gate_reviews', data.project_version_id] });
+      qc.invalidateQueries({ queryKey: ['gate_readiness_summary', data.project_version_id] });
+    },
+  });
+};
+
+export const useCreateGateCriterion = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (criterion: TablesInsert<'gate_criteria'>) => {
+      const { data, error } = await supabase.from('gate_criteria').insert(criterion).select().single();
       if (error) throw error;
       return data as GateCriterionRow;
     },
@@ -859,5 +823,267 @@ export const useCreateECN = () => {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['ecn_notices', data.project_version_id] });
     },
+  });
+};
+
+export const VALID_ECN_TRANSITIONS: Record<string, string[]> = {
+  draft: ['under_review'],
+  under_review: ['approved', 'rejected'],
+  approved: ['implemented'],
+  implemented: [],
+  rejected: [],
+};
+
+export const useUpdateECN = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...updates }: TablesUpdate<'ecn_notices'> & { id: string }) => {
+      // Validate status transition when status is being changed
+      if (updates.status) {
+        const { data: current, error: fetchErr } = await supabase
+          .from('ecn_notices').select('status').eq('id', id).single();
+        if (fetchErr) throw fetchErr;
+
+        const allowed = VALID_ECN_TRANSITIONS[current.status] ?? [];
+        if (!allowed.includes(updates.status)) {
+          throw new Error(`Invalid status transition: ${current.status} → ${updates.status}`);
+        }
+
+        // Auto-enrich timestamp fields
+        if (updates.status === 'approved') {
+          updates.approved_at = updates.approved_at ?? new Date().toISOString();
+        }
+        if (updates.status === 'implemented') {
+          updates.implementation_date = updates.implementation_date ?? new Date().toISOString().split('T')[0];
+        }
+      }
+
+      const { data, error } = await supabase.from('ecn_notices').update(updates).eq('id', id).select().single();
+      if (error) throw error;
+      return data as EcnNoticeRow;
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['ecn_notices', data.project_version_id] }),
+  });
+};
+
+// ── Inventory mutations ──────────────────────────────────────────
+
+export const useCreateInventoryItem = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (item: TablesInsert<'inventory'>) => {
+      const { data, error } = await supabase.from('inventory').insert(item).select().single();
+      if (error) throw error;
+      return data as InventoryRow;
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['inventory', data.project_version_id] }),
+  });
+};
+
+export const useUpdateInventoryItem = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...updates }: TablesUpdate<'inventory'> & { id: string }) => {
+      const { data, error } = await supabase.from('inventory').update(updates).eq('id', id).select().single();
+      if (error) throw error;
+      return data as InventoryRow;
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['inventory', data.project_version_id] }),
+  });
+};
+
+// ── Supplier mutations ───────────────────────────────────────────
+
+export const useCreateSupplier = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (supplier: TablesInsert<'suppliers'>) => {
+      const { data, error } = await supabase.from('suppliers').insert(supplier).select().single();
+      if (error) throw error;
+      return data as SupplierRow;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['suppliers'] }),
+  });
+};
+
+// ── Delete mutations ─────────────────────────────────────────────
+
+export const useDeleteProject = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('projects').delete().eq('id', id);
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+  });
+};
+
+export const useDeleteProjectVersion = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, project_id }: { id: string; project_id: string }) => {
+      const { error } = await supabase.from('project_versions').delete().eq('id', id);
+      if (error) throw error;
+      return { project_id };
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['project_versions', data.project_id] }),
+  });
+};
+
+// ── Profiles (admin user management) ────────────────────────────
+
+export type ProfileRow = {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export const useProfiles = () =>
+  useQuery({
+    queryKey: ['profiles'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('profiles' as never)
+        .select('*' as never)
+        .order('created_at' as never, { ascending: true } as never);
+      if (error) throw error;
+      return (data ?? []) as ProfileRow[];
+    },
+  });
+
+export const useUpdateUserRole = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, role }: { id: string; role: string }) => {
+      const { data, error } = await supabase
+        .from('profiles' as never)
+        .update({ role } as never)
+        .eq('id' as never, id as never)
+        .select('*' as never)
+        .single();
+      if (error) throw error;
+      return data as ProfileRow;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['profiles'] }),
+  });
+};
+
+export const useUpdateProfile = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, full_name }: { id: string; full_name: string }) => {
+      const { data, error } = await supabase
+        .from('profiles' as never)
+        .update({ full_name } as never)
+        .eq('id' as never, id as never)
+        .select('*' as never)
+        .single();
+      if (error) throw error;
+      return data as ProfileRow;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['profiles'] }),
+  });
+};
+
+export const useDeletePartRequest = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, version_id }: { id: string; version_id: string }) => {
+      const { error } = await supabase.from('part_requests').delete().eq('id', id);
+      if (error) throw error;
+      return { version_id };
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['part_requests', data.version_id] }),
+  });
+};
+
+export const useDeletePickingOrder = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, version_id }: { id: string; version_id: string }) => {
+      const { error } = await supabase.from('picking_orders').delete().eq('id', id);
+      if (error) throw error;
+      return { version_id };
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['picking_orders', data.version_id] }),
+  });
+};
+
+export const useDeleteIssue = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, version_id }: { id: string; version_id: string }) => {
+      const { error } = await supabase.from('issues').delete().eq('id', id);
+      if (error) throw error;
+      return { version_id };
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['issues', data.version_id] }),
+  });
+};
+
+export const useDeleteWorkOrder = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, version_id }: { id: string; version_id: string }) => {
+      const { error } = await supabase.from('work_orders').delete().eq('id', id);
+      if (error) throw error;
+      return { version_id };
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['work_orders', data.version_id] }),
+  });
+};
+
+export const useDeleteWorkOrderLine = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, work_order_id }: { id: string; work_order_id: string }) => {
+      const { error } = await supabase.from('work_order_lines').delete().eq('id', id);
+      if (error) throw error;
+      return { work_order_id };
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['work_order_lines', data.work_order_id] }),
+  });
+};
+
+export const useDeleteBomLine = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, project_version_id }: { id: string; project_version_id: string }) => {
+      const { error } = await supabase.from('bom_lines').delete().eq('id', id);
+      if (error) throw error;
+      return { project_version_id };
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['bom_lines', data.project_version_id] }),
+  });
+};
+
+export const useDeleteGateReview = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, project_version_id }: { id: string; project_version_id: string }) => {
+      const { error } = await supabase.from('gate_reviews').delete().eq('id', id);
+      if (error) throw error;
+      return { project_version_id };
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['gate_reviews', data.project_version_id] });
+      qc.invalidateQueries({ queryKey: ['gate_readiness_summary', data.project_version_id] });
+    },
+  });
+};
+
+export const useDeleteECN = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, project_version_id }: { id: string; project_version_id: string }) => {
+      const { error } = await supabase.from('ecn_notices').delete().eq('id', id);
+      if (error) throw error;
+      return { project_version_id };
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ['ecn_notices', data.project_version_id] }),
   });
 };

@@ -1,9 +1,11 @@
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
-import { FileText, Search, ChevronRight, ArrowLeft, AlertTriangle, Loader2, Upload, X, ChevronDown, Check, Pencil } from 'lucide-react';
+import { FileText, Search, ChevronRight, ArrowLeft, AlertTriangle, Loader2, Upload, X, ChevronDown, Pencil } from 'lucide-react';
 import { useState, useMemo, useCallback, useRef } from 'react';
-import { useBomLines, useSuppliers, useInventory, useUploadBomLines, useUpdateBomLine, BomLineRow } from '@/hooks/use-supabase-data';
+import { useBomLines, useSuppliers, useInventory, useUploadBomLines, useUpdateBomLine } from '@/hooks/use-supabase-data';
+import type { TablesInsert } from '@/integrations/supabase/types';
 import { useProject } from '@/contexts/ProjectContext';
+import { useRole } from '@/contexts/AuthContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -94,6 +96,7 @@ const ACCEPTED_EXTENSIONS = '.xlsx,.xls,.csv';
 
 const BOM = () => {
   const { selectedVersion } = useProject();
+  const { can } = useRole();
   const versionId = selectedVersion?.id;
   const [search, setSearch] = useState('');
   const [selectedBom, setSelectedBom] = useState<BomHeader | null>(null);
@@ -127,7 +130,8 @@ const BOM = () => {
         setSelectedBom({ ...selectedBom, name: editBomName.trim() });
       }
       toast.success('BOM renamed');
-    } catch {
+    } catch (err) {
+      console.error('[BOM]', err);
       toast.error('Failed to rename BOM');
     }
     setEditingBomId(null);
@@ -186,7 +190,8 @@ const BOM = () => {
         setExcelHeaders(headers);
         setColumnMapping(mapping);
         setParsedRows(rows);
-      } catch {
+      } catch (err) {
+        console.error('[BOM]', err);
         setParseError('Failed to parse file. Ensure it is a valid Excel or CSV file.');
       }
     };
@@ -246,11 +251,13 @@ const BOM = () => {
     });
 
     try {
-      const count = await uploadBom.mutateAsync({ lines, versionId });
+      // Cast needed: lines are built dynamically from CSV column mapping
+      const count = await uploadBom.mutateAsync({ lines: lines as TablesInsert<'bom_lines'>[], versionId });
       toast.success(`Uploaded ${count} BOM lines`);
       resetUpload();
       setShowUpload(false);
-    } catch {
+    } catch (err) {
+      console.error('[BOM]', err);
       toast.error('Failed to upload BOM data');
     }
   };
@@ -389,13 +396,15 @@ const BOM = () => {
                 <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
                   <FileText className="h-4 w-4 text-muted-foreground" />
                   {selectedBom.name}
-                  <button
-                    onClick={e => startRename(e, selectedBom)}
-                    className="p-0.5 rounded text-muted-foreground hover:text-foreground transition-colors"
-                    title="Rename BOM"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
+                  {can('edit_bom') && (
+                    <button
+                      onClick={e => startRename(e, selectedBom)}
+                      className="p-0.5 rounded text-muted-foreground hover:text-foreground transition-colors"
+                      title="Rename BOM"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </h2>
               )}
             </div>
@@ -510,13 +519,15 @@ const BOM = () => {
           <p className="text-xs text-muted-foreground">{filteredBoms.length} of {bomHeaders.length} BOMs</p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => { resetUpload(); setShowUpload(true); }}
-            className="flex items-center gap-1.5 rounded bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground transition-colors hover:bg-accent/90"
-          >
-            <Upload className="h-3 w-3" />
-            Upload BOM
-          </button>
+          {can('edit_bom') && (
+            <button
+              onClick={() => { resetUpload(); setShowUpload(true); }}
+              className="flex items-center gap-1.5 rounded bg-accent px-2.5 py-1.5 text-[11px] font-medium text-accent-foreground transition-colors hover:bg-accent/90"
+            >
+              <Upload className="h-3 w-3" />
+              Upload BOM
+            </button>
+          )}
           <button
             onClick={() => setShowAtRiskOnly(prev => !prev)}
             className={cn(
@@ -595,13 +606,15 @@ const BOM = () => {
                   ) : (
                     <>
                       <span className="text-sm font-medium text-foreground">{bom.name}</span>
-                      <button
-                        onClick={e => startRename(e, bom)}
-                        className="p-0.5 rounded opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-all"
-                        title="Rename BOM"
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </button>
+                      {can('edit_bom') && (
+                        <button
+                          onClick={e => startRename(e, bom)}
+                          className="p-0.5 rounded opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-all"
+                          title="Rename BOM"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                      )}
                     </>
                   )}
                 </div>

@@ -28,6 +28,8 @@ const Issues = () => {
   const [newIssue, setNewIssue] = useState({
     issue_description: '', related_module: 'Other', priority: 'Medium', assigned_to: '', raised_by: '',
   });
+  const [resolveTarget, setResolveTarget] = useState<string | null>(null);
+  const [resolutionText, setResolutionText] = useState('');
 
   if (!selectedProject || !selectedVersion) return null;
 
@@ -46,18 +48,21 @@ const Issues = () => {
       toast.success('Issue created');
       setShowCreate(false);
       setNewIssue({ issue_description: '', related_module: 'Other', priority: 'Medium', assigned_to: '', raised_by: '' });
-    } catch {
+    } catch (err) {
+      console.error('[Issues]', err);
       toast.error('Failed to create issue');
     }
   };
 
-  const handleResolve = async (id: string) => {
-    const resolution = window.prompt('Resolution:');
-    if (!resolution) return;
+  const handleResolve = async () => {
+    if (!resolveTarget || !resolutionText.trim()) return;
     try {
-      await updateIssue.mutateAsync({ id, status: 'Resolved', resolution, resolved_date: new Date().toISOString() });
+      await updateIssue.mutateAsync({ id: resolveTarget, status: 'Resolved', resolution: resolutionText.trim(), resolved_date: new Date().toISOString() });
       toast.success('Issue resolved');
-    } catch {
+      setResolveTarget(null);
+      setResolutionText('');
+    } catch (err) {
+      console.error('[Issues]', err);
       toast.error('Failed to resolve issue');
     }
   };
@@ -66,7 +71,8 @@ const Issues = () => {
     try {
       await updateIssue.mutateAsync({ id, status: 'Closed' });
       toast.success('Issue closed');
-    } catch {
+    } catch (err) {
+      console.error('[Issues]', err);
       toast.error('Failed to close issue');
     }
   };
@@ -75,7 +81,8 @@ const Issues = () => {
     try {
       await updateIssue.mutateAsync({ id, status: 'In Progress' });
       toast.success('Issue moved to In Progress');
-    } catch {
+    } catch (err) {
+      console.error('[Issues]', err);
       toast.error('Failed to update issue');
     }
   };
@@ -193,7 +200,7 @@ const Issues = () => {
                       <button onClick={() => handleStartProgress(issue.id)} className="text-[10px] font-medium text-foreground hover:underline">Start Progress</button>
                     )}
                     {(issue.status === 'Open' || issue.status === 'In Progress') && (
-                      <button onClick={() => handleResolve(issue.id)} className="text-[10px] font-medium text-ops-green hover:underline">Resolve</button>
+                      <button onClick={() => { setResolveTarget(issue.id); setResolutionText(''); }} className="text-[10px] font-medium text-ops-green hover:underline">Resolve</button>
                     )}
                     {issue.status === 'Resolved' && (
                       <button onClick={() => handleClose(issue.id)} className="text-[10px] font-medium text-muted-foreground hover:underline">Close</button>
@@ -209,6 +216,24 @@ const Issues = () => {
       {issues.length === 0 && (
         <div className="text-center py-10 text-xs text-muted-foreground">No issues logged</div>
       )}
+
+      <Dialog open={!!resolveTarget} onOpenChange={open => { if (!open) { setResolveTarget(null); setResolutionText(''); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Resolve Issue</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 pt-2">
+            <div>
+              <Label>Resolution Notes *</Label>
+              <Textarea value={resolutionText} onChange={e => setResolutionText(e.target.value)} rows={3} placeholder="Describe what was done to resolve this issue..." autoFocus />
+            </div>
+            <Button onClick={handleResolve} disabled={updateIssue.isPending || !resolutionText.trim()} className="w-full">
+              {updateIssue.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Resolve Issue
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

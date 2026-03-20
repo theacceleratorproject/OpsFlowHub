@@ -54,7 +54,8 @@ const ProjectSelector = () => {
       toast.success('Project created');
       setShowCreateProject(false);
       setNewProject({ project_name: '', customer: '', project_lead: '', start_date: '', target_end_date: '' });
-    } catch {
+    } catch (err) {
+      console.error('[ProjectSelector]', err);
       toast.error('Failed to create project');
     }
   };
@@ -69,7 +70,8 @@ const ProjectSelector = () => {
       toast.success('Version created');
       setShowCreateVersion(false);
       setNewVersionName('');
-    } catch {
+    } catch (err) {
+      console.error('[ProjectSelector]', err);
       toast.error('Failed to create version');
     }
   };
